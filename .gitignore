@@ -1,0 +1,24 @@
+# Exclude Excel files
+*.xlsx
+*.xls
+
+# Exclude PowerPoint files
+*.pptx
+*.ppt
+
+# Exclude other common data files if needed
+*.csv
+*.json  # if these are data, not config
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Other common excludes
+.DS_Store
+Thumbs.db

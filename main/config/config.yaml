@@ -1,0 +1,498 @@
+# MRC Business Review Generator - Consolidated Configuration
+# All settings in one file for easier management
+# Created: 2026-03-27
+
+# ════════════════════════════════════════════════════════════════════════════
+# APPLICATION SETTINGS
+# ════════════════════════════════════════════════════════════════════════════
+APP:
+  Name: "MRC Business Review Generator"
+  Version: "2.0"
+  Author: "MRC Finance Team"
+  Created: "2026-03-27"
+  Active_Theme: "premium"  # default or premium
+  
+  # Global number formatting settings
+  Formatting:
+    Abbreviate_Millions: false  # If true, numbers >= 1000k show as 'X.XM' on charts
+    Chart_Decimals: 3          # Precision for chart 'M' labels (1 = 983.1M)
+    Axis_Decimals: 0           # Precision for Y-axis and standard numbers
+    Chart_Label_Hex: "#2B2D42" # Dark Blue-Gray (Inside segment labels)
+    Chart_Total_Hex: "#1E3A8A" # Deep Sapphire Blue (Grand totals above bars)
+    Chart_3D_Modern: false     # Enable modern pills/cylindrical gradients for bars
+    Chart_3D_Classic: true     # Enable true tilted 3D bars (Excel-style)
+    Chart_3D_Isometric: false   # Enable 2.5D right-side only extrusion
+    Chart_Label_Halo: false    # Disable white outline for a cleaner look
+    Chart_Label_Threshold: 0.5  # Show labels for visible segments (>0.5%)
+    # Per-BU label threshold overrides (% of that BU chart's tallest bar).
+    # Set lower for BUs with small segment values so their labels are not suppressed.
+    BU_Label_Threshold:
+      ENG:  0.5
+      MC:   0.5
+      TSI:  0.5
+      NUC:  0.5 
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# THEMES - ALL THEME CONFIGURATIONS
+# ════════════════════════════════════════════════════════════════════════════
+THEMES:
+
+  # ────────────────────────────────────────────────────────────────────────
+  # PREMIUM THEME - SaaS Dashboard Design
+  # ────────────────────────────────────────────────────────────────────────
+  premium:
+    Name: "Premium Corporate"
+    Display_Name: "Premium Corporate"
+    Description: "SaaS Dashboard theme with muted sophisticated colors"
+    Aesthetic: "SaaS Dashboard with sophisticated muted colors"
+    
+    # Template paths
+    Template:
+      File: "template/MRC_Business_Review_Template_Premium_Full.pptx"
+      Backup: "template/MRC_Business_Review_Template_Premium_backup.pptx"
+      Use_Template: true
+      Create_If_Missing: true
+      Metadata:
+        Title: "MRC Business Review Premium Corporate Template"
+        Author: "MRC Finance Team"
+        Subject: "Monthly Business Review - Premium Edition"
+        Version: "2.0"
+        Theme: "SaaS Dashboard"
+    
+    # Color palette
+    Colors:
+      Primary:
+        Hex: "#0EA5E9"
+        RGB: [14, 165, 233]
+        Name: "Sky Blue"
+      Dark:
+        Hex: "#1E3A8A"
+        RGB: [30, 58, 138]
+        Name: "Deep Sapphire Blue"
+      White:
+        Hex: "#FFFFFF"
+        RGB: [255, 255, 255]
+      Background:
+        Hex: "#F4F6F9"  # Soft Grey-Blue
+        RGB: [244, 246, 249]
+        Name: "Soft Grey-Blue"
+      Gray_Light:
+        Hex: "#E2E8F0"  # Very Light Steel
+        RGB: [226, 232, 240]
+      Gray_Light_Blue:
+        Hex: "#F0F5FA"  # Pale Azure
+        RGB: [240, 245, 250]
+      Gray_Mid:
+        Hex: "#64748B"  # Slate Gray
+        RGB: [100, 116, 139]
+      Gray_Spine:
+        Hex: "#CBD5E1"  # Light Steel Gray
+        RGB: [203, 213, 225]
+      Forest_Green:
+        Hex: "#10B981"  # Forest Green
+        RGB: [16, 185, 129]
+        Name: "Forest Green"
+      Amber_Gold:
+        Hex: "#F59E0B"  # Amber Gold
+        RGB: [245, 158, 11]
+        Name: "Amber Gold"
+      Deep_Rose:
+        Hex: "#E11D48"  # Deep Rose
+        RGB: [225, 29, 72]
+        Name: "Deep Rose"
+      Series_Palette:
+        - "#0EA5E9"  # Sky Blue
+        - "#8BBF44"  # Lime Green (MC)
+        - "#F59E0B"  # Amber Gold
+        - "#E11D48"  # Deep Rose
+        - "#1E3A8A"  # Deep Sapphire
+        - "#8B5CF6"  # Violet
+        - "#06B6D4"  # Ocean Cyan
+        - "#EC4899"  # Vivid Pink
+    
+    # Typography
+    Typography:
+      Font_Family: "Segoe UI"
+      Font_Fallbacks:
+        - "Inter"
+        - "Aptos"
+        - "Arial"
+      Sizes:
+        Title_Main: 28
+        Title_BU: 28
+        Subtitle: 12
+        Chart_Label: 8
+        Chart_Title: 16
+        Chart_Legend: 11
+        Table_Header: 11
+        Table_Body: 10
+        Callout_Label: 9
+        Callout_Value: 13.5
+        ThankYou_Main: 80
+        ThankYou_Sub: 12
+    
+    # Slide dimensions
+    Slide:
+      Width_Inches: 13.33
+      Height_Inches: 7.50
+      Aspect_Ratio: "16:9"
+      Format: "Widescreen"
+    
+    # Chart rendering
+    Charts:
+      DPI: 150
+      Format: "PNG"
+      Background_Color: "#FFFFFF"
+      Figure_Size:
+        Width: 13
+        Height: 5.5
+      Theme: "whitegrid"
+      Axis:
+        Face_Color: "#FFFFFF"
+        Edge_Color: "#E2E8F0"
+        Grid_Color: "#F4F6F9"
+        Text_Color: "#1E3A8A"
+        Label_Color: "#1E3A8A"
+        Tick_Color: "#1E3A8A"
+        Spine_Color: "#E2E8F0"
+        Spine_Width: 0.8
+    
+    # Bar chart styling
+    Bar_Chart:
+      Bar_Width: 0.55
+      Bar_Alpha: 0.92
+      Bar_Alpha_Negative: 0.65
+      Label:
+        Threshold_Percent: 3
+        Font_Size: 8
+        Font_Weight: "bold"
+      Total_Label:
+        Font_Size: 8.5
+        Font_Weight: "bold"
+        Offset_Percent: 1
+    
+    # Grouped chart styling
+    Grouped_Chart:
+      Group_Width: 0.8
+      Bar_Alpha: 0.88
+      Value_Label_Font_Size: 8
+      Value_Label_Font_Weight: "bold"
+      Value_Label_Offset_Percent: 1.2
+    
+    # Branding
+    Branding:
+      Company_Name: "MRC TÜRKİYE"
+      Website: "www.mrc-international.com"
+      Sidebar:
+        Width_Inches: 4.5
+        Background_Color: "#1E3A8A"
+      Chart_Title_Separator: " — "
+      Edition: "Premium Corporate Edition"
+    
+    # Callout box styling
+    Callout_Box:
+      Background_Color: "#F0F5FA"
+      Border_Color: "#0EA5E9"
+      Border_Width: 1.5
+      Label_Font_Size: 9
+      Label_Font_Color: "#64748B"
+      Value_Font_Size: 13.5
+      Value_Font_Color: "#1E3A8A"
+      Value_Font_Weight: "bold"
+      Space_After_Label: 0
+      Space_After_Value: 5
+      Padding_Horizontal: 0.13
+      Padding_Vertical: 0.13
+    
+    # Table styling
+    Table:
+      Header:
+        Background_Color: "#1E3A8A"
+        Text_Color: "#FFFFFF"
+        Font_Size: 11
+        Font_Weight: "bold"
+      Data_Odd_Row:
+        Background_Color: "#FFFFFF"
+      Data_Even_Row:
+        Background_Color: "#F4F6F9"
+      Data_Text:
+        Color: "#1E3A8A"
+        Font_Size: 10
+    
+    # Layout elements
+    Layout:
+      Header_Bar:
+        Height_Inches: 0.03
+        Background_Color: "#E2E8F0"
+      Divider:
+        Color: "#E2E8F0"
+        Width: 0.9
+    
+    # Thank you slide
+    Thank_You_Slide:
+      Accent_Bar_Height: 0.2
+      Main_Text_Size: 80
+      Main_Text_Weight: "bold"
+      Main_Text_Color: "#1E3A8A"
+      Subtitle_Text_Size: 12
+      Subtitle_Text_Color: "#64748B"
+    
+    # Master slide setup
+    Master_Slides:
+      Slide_Width: 13.33
+      Slide_Height: 7.50
+      Blank_Layout_Index: 6
+      Default_Font: "Segoe UI"
+      Default_Font_Fallback: ["Inter", "Aptos", "Arial"]
+    
+    # Template components
+    Components:
+      Header_Bar:
+        Height: 0.03
+        Color: "#0EA5E9"
+      Sidebar:
+        Width: 4.5
+        Color: "#1E3A8A"
+      Title_Box:
+        Font: "Segoe UI"
+        Size: 28
+        Weight: "bold"
+        Color: "#1E3A8A"
+      Subtitle_Box:
+        Font: "Segoe UI"
+        Size: 12
+        Color: "#64748B"
+      Table_Header:
+        Background: "#1E3A8A"
+        Text_Color: "#FFFFFF"
+      Table_Data:
+        Background_Odd: "#FFFFFF"
+        Background_Even: "#F4F6F9"
+        Text_Color: "#1E3A8A"
+    
+    # Creation options
+    Creation:
+      Overwrite_Existing: false
+      Backup_Before_Create: true
+      Verbose: true
+      Validate_After_Create: true
+    
+    # Validation
+    Validation:
+      Check_File_Exists: true
+      Check_File_Size_Min: 100000
+      Check_Slide_Count_Min: 1
+      Check_Writable: true
+      Check_Loadable: true
+    
+    # Paths
+    Paths:
+      Template_Dir: "template"
+      Template_Filename: "MRC_Business_Review_Template_Premium.pptx"
+      Backup_Dir: "template/backups"
+      Auto_Create_Dir: true
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# WIP TABLE (Slide 7+)
+# ════════════════════════════════════════════════════════════════════════════
+WIP_Table:
+  WIP_Slide_MaxRows: 10   # Max rows per WIP slide; extra rows go to slide 2
+  WIP_Min_TL: 1000000     # Only include projects >= 1M TL WIP
+  Font_Size:
+    Header: 11      # Header row font size (pt)
+    Data:   10.5    # Data row font size (pt)
+    Total:  11      # Total row font size (pt)
+  # Columns to display. Order here = order in table.
+  # field: key from wip project dict (name, client, orig_currency, inv_oc, prod_oc, wip_tl)
+  # width_pct: share of total table width (must sum to 1.0)
+  # align: LEFT, CENTER, RIGHT
+  Columns:
+    - field: name
+      header: "Project Name"
+      width_pct: 0.32
+      align: LEFT
+    - field: client
+      header: "Client"
+      width_pct: 0.18
+      align: LEFT
+    - field: orig_currency
+      header: "Currency"
+      width_pct: 0.10
+      align: CENTER
+    - field: inv_oc
+      header: "Total Invoice OC"
+      width_pct: 0.15
+      align: RIGHT
+    - field: prod_oc
+      header: "Total Prod OC"
+      width_pct: 0.15
+      align: RIGHT
+    - field: wip_tl
+      header: "WIP TL"
+      width_pct: 0.10
+      align: RIGHT
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# BUSINESS UNIT COLORS
+# These are used consistently across all BU charts regardless of active theme.
+# Order must match: ENG, MC, T&SI, NUC
+# ════════════════════════════════════════════════════════════════════════════
+BU_Colors:
+  # ENG:  "#00B4D8"  # Cyan
+  # MC:   "#FF006E"  # Pink
+  # TSI:  "#8338EC"  # Purple
+  # NUC:  "#FFBE0B"  # Yellow  
+  ENG:  "#0EA5E9"  # Sky Blue
+  MC:   "#8BBF44"  # Lime Green
+  TSI:  "#FAB611"  # Amber Gold
+  NUC:  "#016B61"  # Teal
+
+# How the 3 tiers (Order / Offer / Opp) are shaded from each BU's base color.
+# Each tier adjusts Saturation and Brightness (Value) of the base HSV color.
+# Order = full base color (no adjustment needed).
+# Lower saturation = more washed out. Higher brightness = lighter.
+BU_Shade_Tiers:
+  # Minimum HSV brightness applied to the base color before tier multipliers.
+  # Dark BU colors (e.g. NUC teal #016B61, V≈0.42) would otherwise produce
+  # illegible dark bars even at the Opp tier. Floor lifts the base so all
+  # three tiers produce readable shades. Has no effect on bright base colors.
+  Base_Brightness_Floor: 0.62
+  Order:
+    Saturation_Multiplier: 1.0
+    Brightness_Multiplier: 1.0
+  Offer:
+    Saturation_Multiplier: 0.45   # Noticeably washed-out mid-tint
+    Brightness_Multiplier: 1.18
+  Opp:
+    Color: "#BBBBBB"              # Fixed gray — overrides HSV tinting for all BUs
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# END OF CONFIGURATION
+# ════════════════════════════════════════════════════════════════════════════
+
+# 
+# EXCEL DATA MAPPING (0-based Python indices)
+# 
+Excel_Mapping:
+  Rows:
+    Categories_NS_kTL: 14
+    Categories_NS_kEUR: 47
+    Categories_EBIT_kTL: 36
+    Categories_EBIT_kEUR: 55
+    Categories_OI_kTL: 543
+    Categories_BU_NS: 14
+    Categories_BU_EBIT: 97
+    
+    Slide2_Contract: 15
+    Slide2_WP: 16
+    Slide2_WO: 17
+    
+    Slide3_Contract: 48
+    Slide3_WP: 49
+    Slide3_WO: 50
+    
+    
+    Slide4_Contract: 37
+    Slide4_Contract_WP: 38
+    Slide4_Contract_WP_WO: 39
+    
+    Slide5_Contract: 56
+    Slide5_Contract_WP: 57
+    Slide5_Contract_WP_WO: 58
+
+    
+    Slide6_ENG: 544
+    Slide6_MC: 545
+    Slide6_TSI: 546
+    Slide6_NUC: 547
+    
+    BU_NS_ENG_Order: 19
+    BU_NS_ENG_Offer: 20
+    BU_NS_ENG_Opp: 21
+    
+    BU_NS_MC_Order: 16
+    BU_NS_MC_Offer: 17
+    BU_NS_MC_Opp: 18
+    
+    BU_NS_TSI_Order: 22
+    BU_NS_TSI_Offer: 23
+    BU_NS_TSI_Opp: 24
+    
+    BU_NS_NUC_Order: 25
+    BU_NS_NUC_Offer: 26
+    BU_NS_NUC_Opp: 27
+    
+    BU_EBIT_ENG: 100
+    BU_EBIT_MC:  99
+    BU_EBIT_TSI: 101
+    BU_EBIT_NUC: 102
+    
+    # EBIT % Row (same row used for both kTL and kEUR)
+    EBIT_P_kTL: 42
+    
+    Slide7_Deals_Start: 122
+    Slide7_Deals_End: 150
+
+    # Order Intake month-header row (Excel row 540 = pandas row 539)
+    OI_Month_Header_Row: 539
+
+    # BU EBIT % rows — used for EBIT % labels inside BU EBIT chart bars
+    BU_EBIT_P_ENG: 108
+    BU_EBIT_P_MC:  107
+    BU_EBIT_P_TSI: 109
+    BU_EBIT_P_NUC: 110
+
+    # WIP & BL sheet row index
+    WIP_DataStartRow: 3
+
+  Columns:
+    # Summary Sheet Columns (Start/End for range)
+    NS_kTL_Start: 2
+    NS_kTL_End: 17
+    NS_kEUR_Start: 2
+    NS_kEUR_End: 17
+    EBIT_kTL_Start: 1
+    EBIT_kTL_End: 17
+    EBIT_kEUR_Start: 1
+    EBIT_kEUR_End: 17
+    OI_kTL_Start: 4
+    OI_kTL_End: 18
+    BU_NS_Start: 52
+    BU_NS_End: 66
+    BU_EBIT_Start: 52
+    BU_EBIT_End: 66
+    
+    # Gross Margin Sheet Columns
+    GM_STATUS: 6
+    GM_ITEM: 7
+    GM_PROJ: 4
+    GM_CLIENT: 2
+    GM_TOTAL: 25
+
+    # Order Intake Sheet Columns
+    OI_PROJ: 3
+    OI_CLIENT: 2
+    OI_BU: 4
+
+    # WIP & BL sheet column indices
+    WIP_Col_Code: 1
+    WIP_Col_Name: 2
+    WIP_Col_Type: 3
+    WIP_Col_Client: 4
+    WIP_Col_BU: 10
+    WIP_Col_OrigCurrency: 11
+    WIP_Col_TotalInvoiceOC: 93
+    WIP_Col_TotalProdOC: 94
+    WIP_Col_WIP_TL: 98
+
+  Offsets:
+    MON_NS_Base: 3      # NS arrays (col2-16, 15 values): [0]=2025, [1]=2026T, [2]=BL, [3]=Jan
+    MON_EBIT_Base: 3    # EBIT arrays (col1-16, 16 values): [0]=2025, [1]=2026T, [2]=BL, [3]=Jan
+    MON_BU_Base: 2      # BU NS/EBIT arrays (col52-65, 14 values): [0]=2025, [1]=2026Target, [2]=Jan
+    MON_OI_Base: 2
+    OI_Col_Base: 6
+

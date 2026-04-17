@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/begum.orhan/OneDrive/**)",
+      "Bash(unzip -q \"MRC_MBR_Stacked_February_2026.pptx\" -d pptx_extracted)",
+      "Bash(grep -l \"Order intake\" *.xml)",
+      "Bash(grep -i \"order\\\\|intake\\\\|wip\" *.xml)",
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(source .venv/Scripts/activate)",
+      "Bash(python:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python generate_full_mbr_stacked.py \"260228_Project_Budget_Analysis_February_v1.2.xlsx\")"
+    ]
+  }
+}
