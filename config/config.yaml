@@ -12,6 +12,17 @@ APP:
   Created: "2026-03-27"
   Active_Theme: "premium"  # default or premium
   
+  # Output file naming
+  Output:
+    Filename_Prefix: "MRC_Business_Review_"  # Auto-prefixed with YYMMDD from the source Excel filename
+    Save_In_Excel_Folder: true  # Save PPTX in same folder as source Excel
+    Create_Temps_Folder: true   # Create temps/ folder for chart PNGs
+  
+  # Temps folder for chart files
+  Temps: 
+    Folder_Name: "temps"
+    Clean_After_Generate: true
+  
   # Global number formatting settings
   Formatting:
     Abbreviate_Millions: false  # If true, numbers >= 1000k show as 'X.XM' on charts
@@ -31,6 +42,7 @@ APP:
       MC:   0.5
       TSI:  0.5
       NUC:  0.5 
+    ABNS_Max_Projects: 0  # 0 means show all ABNS projects on the callout
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -47,18 +59,9 @@ THEMES:
     Description: "SaaS Dashboard theme with muted sophisticated colors"
     Aesthetic: "SaaS Dashboard with sophisticated muted colors"
     
-    # Template paths
+    # Template path
     Template:
       File: "template/MRC_Business_Review_Template_Premium_Full.pptx"
-      Backup: "template/MRC_Business_Review_Template_Premium_backup.pptx"
-      Use_Template: true
-      Create_If_Missing: true
-      Metadata:
-        Title: "MRC Business Review Premium Corporate Template"
-        Author: "MRC Finance Team"
-        Subject: "Monthly Business Review - Premium Edition"
-        Version: "2.0"
-        Theme: "SaaS Dashboard"
     
     # Color palette
     Colors:
@@ -118,180 +121,7 @@ THEMES:
         - "Inter"
         - "Aptos"
         - "Arial"
-      Sizes:
-        Title_Main: 28
-        Title_BU: 28
-        Subtitle: 12
-        Chart_Label: 8
-        Chart_Title: 16
-        Chart_Legend: 11
-        Table_Header: 11
-        Table_Body: 10
-        Callout_Label: 9
-        Callout_Value: 13.5
-        ThankYou_Main: 80
-        ThankYou_Sub: 12
-    
-    # Slide dimensions
-    Slide:
-      Width_Inches: 13.33
-      Height_Inches: 7.50
-      Aspect_Ratio: "16:9"
-      Format: "Widescreen"
-    
-    # Chart rendering
-    Charts:
-      DPI: 150
-      Format: "PNG"
-      Background_Color: "#FFFFFF"
-      Figure_Size:
-        Width: 13
-        Height: 5.5
-      Theme: "whitegrid"
-      Axis:
-        Face_Color: "#FFFFFF"
-        Edge_Color: "#E2E8F0"
-        Grid_Color: "#F4F6F9"
-        Text_Color: "#1E3A8A"
-        Label_Color: "#1E3A8A"
-        Tick_Color: "#1E3A8A"
-        Spine_Color: "#E2E8F0"
-        Spine_Width: 0.8
-    
-    # Bar chart styling
-    Bar_Chart:
-      Bar_Width: 0.55
-      Bar_Alpha: 0.92
-      Bar_Alpha_Negative: 0.65
-      Label:
-        Threshold_Percent: 3
-        Font_Size: 8
-        Font_Weight: "bold"
-      Total_Label:
-        Font_Size: 8.5
-        Font_Weight: "bold"
-        Offset_Percent: 1
-    
-    # Grouped chart styling
-    Grouped_Chart:
-      Group_Width: 0.8
-      Bar_Alpha: 0.88
-      Value_Label_Font_Size: 8
-      Value_Label_Font_Weight: "bold"
-      Value_Label_Offset_Percent: 1.2
-    
-    # Branding
-    Branding:
-      Company_Name: "MRC TÜRKİYE"
-      Website: "www.mrc-international.com"
-      Sidebar:
-        Width_Inches: 4.5
-        Background_Color: "#1E3A8A"
-      Chart_Title_Separator: " — "
-      Edition: "Premium Corporate Edition"
-    
-    # Callout box styling
-    Callout_Box:
-      Background_Color: "#F0F5FA"
-      Border_Color: "#0EA5E9"
-      Border_Width: 1.5
-      Label_Font_Size: 9
-      Label_Font_Color: "#64748B"
-      Value_Font_Size: 13.5
-      Value_Font_Color: "#1E3A8A"
-      Value_Font_Weight: "bold"
-      Space_After_Label: 0
-      Space_After_Value: 5
-      Padding_Horizontal: 0.13
-      Padding_Vertical: 0.13
-    
-    # Table styling
-    Table:
-      Header:
-        Background_Color: "#1E3A8A"
-        Text_Color: "#FFFFFF"
-        Font_Size: 11
-        Font_Weight: "bold"
-      Data_Odd_Row:
-        Background_Color: "#FFFFFF"
-      Data_Even_Row:
-        Background_Color: "#F4F6F9"
-      Data_Text:
-        Color: "#1E3A8A"
-        Font_Size: 10
-    
-    # Layout elements
-    Layout:
-      Header_Bar:
-        Height_Inches: 0.03
-        Background_Color: "#E2E8F0"
-      Divider:
-        Color: "#E2E8F0"
-        Width: 0.9
-    
-    # Thank you slide
-    Thank_You_Slide:
-      Accent_Bar_Height: 0.2
-      Main_Text_Size: 80
-      Main_Text_Weight: "bold"
-      Main_Text_Color: "#1E3A8A"
-      Subtitle_Text_Size: 12
-      Subtitle_Text_Color: "#64748B"
-    
-    # Master slide setup
-    Master_Slides:
-      Slide_Width: 13.33
-      Slide_Height: 7.50
-      Blank_Layout_Index: 6
-      Default_Font: "Segoe UI"
-      Default_Font_Fallback: ["Inter", "Aptos", "Arial"]
-    
-    # Template components
-    Components:
-      Header_Bar:
-        Height: 0.03
-        Color: "#0EA5E9"
-      Sidebar:
-        Width: 4.5
-        Color: "#1E3A8A"
-      Title_Box:
-        Font: "Segoe UI"
-        Size: 28
-        Weight: "bold"
-        Color: "#1E3A8A"
-      Subtitle_Box:
-        Font: "Segoe UI"
-        Size: 12
-        Color: "#64748B"
-      Table_Header:
-        Background: "#1E3A8A"
-        Text_Color: "#FFFFFF"
-      Table_Data:
-        Background_Odd: "#FFFFFF"
-        Background_Even: "#F4F6F9"
-        Text_Color: "#1E3A8A"
-    
-    # Creation options
-    Creation:
-      Overwrite_Existing: false
-      Backup_Before_Create: true
-      Verbose: true
-      Validate_After_Create: true
-    
-    # Validation
-    Validation:
-      Check_File_Exists: true
-      Check_File_Size_Min: 100000
-      Check_Slide_Count_Min: 1
-      Check_Writable: true
-      Check_Loadable: true
-    
-    # Paths
-    Paths:
-      Template_Dir: "template"
-      Template_Filename: "MRC_Business_Review_Template_Premium.pptx"
-      Backup_Dir: "template/backups"
-      Auto_Create_Dir: true
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -341,14 +171,10 @@ WIP_Table:
 # Order must match: ENG, MC, T&SI, NUC
 # ════════════════════════════════════════════════════════════════════════════
 BU_Colors:
-  # ENG:  "#00B4D8"  # Cyan
-  # MC:   "#FF006E"  # Pink
-  # TSI:  "#8338EC"  # Purple
-  # NUC:  "#FFBE0B"  # Yellow  
-  ENG:  "#0EA5E9"  # Sky Blue
-  MC:   "#8BBF44"  # Lime Green
-  TSI:  "#FAB611"  # Amber Gold
-  NUC:  "#016B61"  # Teal
+  ENG:  "#0EA5E9"
+  MC:   "#8BBF44"
+  TSI:  "#FAB611"
+  NUC:  "#016B61"
 
 # How the 3 tiers (Order / Offer / Opp) are shaded from each BU's base color.
 # Each tier adjusts Saturation and Brightness (Value) of the base HSV color.
@@ -370,13 +196,11 @@ BU_Shade_Tiers:
     Color: "#BBBBBB"              # Fixed gray — overrides HSV tinting for all BUs
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# END OF CONFIGURATION
-# ════════════════════════════════════════════════════════════════════════════
 
-# 
+
+# ════════════════════════════════════════════════════════════════════════════
 # EXCEL DATA MAPPING (0-based Python indices)
-# 
+# ════════════════════════════════════════════════════════════════════════════
 Excel_Mapping:
   Rows:
     Categories_NS_kTL: 14
@@ -394,8 +218,7 @@ Excel_Mapping:
     Slide3_Contract: 48
     Slide3_WP: 49
     Slide3_WO: 50
-    
-    
+
     Slide4_Contract: 37
     Slide4_Contract_WP: 38
     Slide4_Contract_WP_WO: 39
@@ -404,7 +227,7 @@ Excel_Mapping:
     Slide5_Contract_WP: 57
     Slide5_Contract_WP_WO: 58
 
-    
+
     Slide6_ENG: 544
     Slide6_MC: 545
     Slide6_TSI: 546
@@ -426,16 +249,15 @@ Excel_Mapping:
     BU_NS_NUC_Offer: 26
     BU_NS_NUC_Opp: 27
     
+    # Excel rows for BU EBIT data — verified against 'Summary TL' sheet:
+    # ENG=row100, MC=row99, TSI=row101, NUC=row102 (all pandas row = Excel row - 1)
     BU_EBIT_ENG: 100
-    BU_EBIT_MC:  99
+    BU_EBIT_MC:   99
     BU_EBIT_TSI: 101
     BU_EBIT_NUC: 102
     
     # EBIT % Row (same row used for both kTL and kEUR)
     EBIT_P_kTL: 42
-    
-    Slide7_Deals_Start: 122
-    Slide7_Deals_End: 150
 
     # Order Intake month-header row (Excel row 540 = pandas row 539)
     OI_Month_Header_Row: 539

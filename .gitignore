@@ -6,6 +6,8 @@
 *.pptx
 *.ppt
 
+*.docx
+
 # Exclude other common data files if needed
 *.csv
 *.json  # if these are data, not config

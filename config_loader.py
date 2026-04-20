@@ -5,6 +5,15 @@ Configuration file loader for MRC Business Review generator.
 
 Loads a single consolidated YAML configuration file and provides a unified
 interface to access all settings without hardcoding values in the script.
+Structure:
+    - 251130_November\\251130_Project_Budget_Analysis_November_v1.4.xlsx
+    - 251231_December\\251231_Project_Budget_Analysis_December_v1.2.xlsx
+    - 260228_February\\260228_Project_Budget_Analysis_February_v1.2.xlsx
+    
+Output naming:
+    - 260228_Business_Review_February.pptx (saved in same folder as source Excel)
+    - 260131_Business_Review_January.pptx
+    - Output saved to month folder where Excel is located
 
 Usage:
     from config_loader import ConfigLoader
@@ -23,20 +32,20 @@ Usage:
 
 import os
 import yaml
-import json
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 
 class ConfigLoader:
     """
-    Loads and provides access to a consolidated configuration file.
-    
-    The single config.yaml file contains all theme and app settings:
-    - excel_mapping.yaml: Excel data source mappings
-    - design.yaml: Colors, fonts, visual styling
-    - layouts.yaml: Slide element positioning
-    - chart_params.yaml: Chart rendering parameters
+    Loads and provides access to the consolidated config/config.yaml file.
+
+    All settings live in a single YAML under the ./config/ directory:
+    - APP:           Application settings, output naming, formatting flags
+    - THEMES:        Theme configuration (only 'premium' is active)
+    - WIP_Table:     WIP slide column definitions and filtering thresholds
+    - BU_Colors:     Business unit colour definitions (ENG, MC, T&SI, NUC)
+    - BU_Shade_Tiers: HSV tinting rules for Order / Offer / Opp stacked bars
+    - Excel_Mapping: Row, column and offset indices for each Excel sheet
     """
     
     def __init__(self, config_dir: Optional[str] = None):
@@ -201,7 +210,7 @@ class ConfigLoader:
             >>> loader.get_active_theme_template()
             {
                 'theme': 'premium',
-                'template': 'template/MRC_Business_Review_Template_Premium.pptx',
+                'template': 'template/MRC_Business_Review_Template_Premium_Full.pptx',
                 'design_config': 'config/config.yaml',
                 'template_config': 'config/config.yaml'
             }
@@ -225,7 +234,7 @@ class ConfigLoader:
             print("Using classic template as fallback.")
             return {
                 'theme': 'default',
-                'template': 'template/MRC_Business_Review_Template.pptx',
+                'template': 'template/MRC_Business_Review_Template_Premium_Full.pptx',
                 'design_config': 'config/config.yaml',
                 'template_config': 'config/config.yaml'
             }
