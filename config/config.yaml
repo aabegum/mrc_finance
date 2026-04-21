@@ -310,6 +310,13 @@ Excel_Mapping:
     WIP_Col_TotalInvoiceOC: 93
     WIP_Col_TotalProdOC: 94
     WIP_Col_WIP_TL: 98
+    
+    # Ext. Prod. Sheet Columns
+    EXT_PROD_CODE: 1
+    EXT_PROD_NAME: 2
+    EXT_PROD_TYPE: 3
+    EXT_PROD_CLIENT: 4
+    EXT_PROD_BU: 6
 
   Offsets:
     MON_NS_Base: 3      # NS arrays (col2-16, 15 values): [0]=2025, [1]=2026T, [2]=BL, [3]=Jan

@@ -24,3 +24,5 @@ __pycache__/
 # Other common excludes
 .DS_Store
 Thumbs.db
+
+New Folder/
