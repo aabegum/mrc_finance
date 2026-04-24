@@ -887,9 +887,11 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                           Pass the WIP template slide index when creating WIP overflow slides
                           so branding is copied from the clean template, not a populated chart slide.
     """
-    # Content area starts where add_header places elements (Inches(0.45))
-    # Shapes with left >= this are in the main content area and must be filtered.
-    _CONTENT_LEFT = Inches(0.45)
+    # Content area: left edge of main content to just before the right-side decoration.
+    # Shapes at left >= _CONTENT_RIGHT are right-edge branding (e.g. the rounded group
+    # decoration at ~12.88") and must be preserved even though they sit inside the slide.
+    _CONTENT_LEFT  = Inches(0.45)
+    _CONTENT_RIGHT = Inches(12.5)   # right-sidebar branding starts here
     _PLACEHOLDER_TEXTS = {"[CHART TITLE]", "[SUBTITLE]", "[CHART IMAGE]", "[KEY METRICS]"}
     _PICTURE_SHAPE_TYPE = 13  # MSO_SHAPE_TYPE.PICTURE
 
@@ -916,7 +918,7 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                 is_placeholder = False
 
                 shape_left = getattr(shape, "left", 0) or 0
-                in_content_area = shape_left >= _CONTENT_LEFT
+                in_content_area = _CONTENT_LEFT <= shape_left < _CONTENT_RIGHT
 
                 # 1. Known placeholder text markers
                 if hasattr(shape, "text"):
@@ -931,6 +933,13 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                 # 3. Picture shapes in the content area have embedded relationship IDs
                 #    that do not transfer correctly and cause PowerPoint corruption errors.
                 if not is_placeholder and shape.shape_type == _PICTURE_SHAPE_TYPE and in_content_area:
+                    is_placeholder = True
+
+                # 4. Tables, OLE objects, charts and other GraphicFrame shapes in the
+                #    content area — they don't have a simple .text property so the text
+                #    check above misses them, and they must not be copied to new slides.
+                #    Only AUTO_SHAPE (type 1) background fills are allowed through.
+                if not is_placeholder and in_content_area and shape.shape_type not in (1, 17):
                     is_placeholder = True
 
                 if is_placeholder:
@@ -1445,7 +1454,7 @@ def export_wip_to_excel(wip_rows, month, year, output_dir, slide_rows=None, nega
                 proj["inv_oc"],
                 proj["prod_oc"],
                 proj["wip_tl"],
-                "",
+                "YES",
             ]
             fill = neg_data_fill_odd if ni % 2 == 1 else None
             for ci, val in enumerate(row_vals, 1):
@@ -1874,11 +1883,11 @@ def add_wip_table_to_slide(slide, wip_projects, slide_num=7):
     print(f"  [Slide 7] WIP table: {n_data} projects, WIP TL = {human_tl(total_wip)}")
 
 
-def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide_num=8):
+def add_wip_negative_table_to_slide(slide, negative_rows, all_positive_wip, slide_num=8):
     """
     WIP Negative Projects table for its own dedicated slide.
     Uses the same column config as the positive WIP table.
-    Appends a NEGATIVE SUBTOTAL row and a GRAND TOTAL (>=1M + Negatives) row.
+    Appends a NEGATIVE SUBTOTAL row and a GRAND TOTAL (all positives + negatives) row.
     Negative WIP TL values are rendered in red.
     """
     from pptx.enum.text import MSO_ANCHOR
@@ -2005,11 +2014,11 @@ def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide
                 run.font.bold = True
                 run.font.size = _fs_total
 
-    # ── Grand total row (>=1M positives + negatives) ──
-    grand_total_wip = slide_total_wip + total_wip
+    # ── Grand total row (ALL positives + negatives) ──
+    grand_total_wip = all_positive_wip + total_wip
     grand_tot_ri = n_rows - 1
     grand_tot_values = {
-        "name":   f"GRAND TOTAL  (\u22651M on slides + Negatives)",
+        "name":   "GRAND TOTAL  (All WIP incl. Negatives)",
         "wip_tl": human_tl(grand_total_wip),
     }
     _grand_dark = RGBColor(0x1E, 0x3A, 0x8A)  # Deep Sapphire
@@ -2166,34 +2175,34 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     s5_cwp = rv(R.get("Slide5_Contract_WP", 57), C.get("EBIT_kEUR_Start", 1), C.get("EBIT_kEUR_End", 16))
     s5_cwp_wo = rv(R.get("Slide5_Contract_WP_WO", 58), C.get("EBIT_kEUR_Start", 1), C.get("EBIT_kEUR_End", 16))
 
-    # Dynamically find the OI categories row to handle Excel files that have
-    # a different number of rows (e.g. January file has 1 extra row vs February).
-    # The categories row is identified by having a year value (2025) at OI_kTL_Start
-    # and "Jan" at OI_kTL_Start+2.
     _oi_col_start = C.get("OI_kTL_Start", 4)
     _oi_col_end   = C.get("OI_kTL_End", 18)
-    _oi_cats_cfg  = R.get("Categories_OI_kTL", 543)
-    _oi_cats_row  = _oi_cats_cfg  # default
-    for _probe in range(max(0, _oi_cats_cfg - 10), min(len(df_oi), _oi_cats_cfg + 70)):
-        if 0 <= _probe < len(df_oi):
-            _c4 = str(df_oi.iloc[_probe, _oi_col_start]).strip()
-            _c6 = str(df_oi.iloc[_probe, _oi_col_start + 2]).strip()
-            # Categories row: col4 looks like a year (e.g. "2025"), col6 is "Jan"
-            if _c4.split(".")[0].isdigit() and len(_c4.split(".")[0]) == 4 and "jan" in _c6.lower():
-                _oi_cats_row = _probe
-                break
-    _oi_offset = _oi_cats_row - _oi_cats_cfg  # 0 for most files, ±N if file has extra/fewer rows
-    if _oi_offset != 0:
-        print(f"[OI] Row offset detected: {_oi_offset:+d} (file row count differs from config baseline)")
 
-    def _oi_row(key, default):
-        return [safe_float(df_oi.iloc[R.get(key, default) + _oi_offset, c])
-                for c in range(_oi_col_start, _oi_col_end)]
+    # Locate the BU summary table by finding "Engineering" at the label column (col D = index 3).
+    # Project-level rows carry the BU name at col 4 (OI_kTL_Start); the summary row uses col 3.
+    # Searching from the bottom of the sheet ensures we always get the summary table, not a
+    # project row, and is stable regardless of how many project rows are added each month.
+    _oi_label_col = _oi_col_start - 1
+    _oi_eng_row = None
+    for _r in range(len(df_oi) - 1, -1, -1):
+        if str(df_oi.iloc[_r, _oi_label_col]).strip() == "Engineering":
+            _oi_eng_row = _r
+            break
+    if _oi_eng_row is None:
+        print("[OI] WARNING: 'Engineering' summary row not found — using config default")
+        _oi_eng_row = R.get("Slide6_ENG", 544)
+    else:
+        print(f"[OI] Summary table found: Engineering at pandas row {_oi_eng_row} (Excel row {_oi_eng_row + 1})")
 
-    s6_eng = _oi_row("Slide6_ENG", 544)
-    s6_mc  = _oi_row("Slide6_MC",  545)
-    s6_tsi = _oi_row("Slide6_TSI", 546)
-    s6_nuc = _oi_row("Slide6_NUC", 547)
+    _oi_cats_row = _oi_eng_row - 1  # categories header row (2025, 2026 Target, Jan, …)
+
+    def _oi_row_at(row_idx):
+        return [safe_float(df_oi.iloc[row_idx, c]) for c in range(_oi_col_start, _oi_col_end)]
+
+    s6_eng = _oi_row_at(_oi_eng_row)
+    s6_mc  = _oi_row_at(_oi_eng_row + 1)
+    s6_tsi = _oi_row_at(_oi_eng_row + 2)
+    s6_nuc = _oi_row_at(_oi_eng_row + 3)
 
     def bu_ns_row(xrow):
         return [safe_float(df.iloc[xrow - 1, c]) for c in range(C.get("BU_NS_Start", 52), C.get("BU_NS_End", 66))]
@@ -2388,27 +2397,17 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     oi_total = s6_eng[13] + s6_mc[13] + s6_tsi[13] + s6_nuc[13]
     oi_ytd = s6_eng[MON_OI] + s6_mc[MON_OI] + s6_tsi[MON_OI] + s6_nuc[MON_OI]
 
-    # ── OI callout: dynamic month-column scan on row 540 (pandas 539) ────────
-    # 'Order Intake'!$D$544:$R$548 — month headers at row 540, cols G(6) to R(18)
-    _oi_hdr_row = R.get("OI_Month_Header_Row", 539)  # Excel row 540 = pandas 539
-    _oi_mon_col = _find_oi_month_col(_oi_hdr_row, 6, 18, month)
+    # ── OI callout: month-column scan using the dynamically-found categories row ──
+    _oi_mon_col = _find_oi_month_col(_oi_cats_row, _oi_col_start, _oi_col_end, month)
     if _oi_mon_col is not None and df_oi is not None:
         _oi_curr = sum(
-            safe_float(df_oi.iloc[R.get(k, d) + _oi_offset, _oi_mon_col])
-            for k, d in [
-                ("Slide6_ENG", 544), ("Slide6_MC", 545),
-                ("Slide6_TSI", 546), ("Slide6_NUC", 547),
-            ]
+            safe_float(df_oi.iloc[_oi_eng_row + i, _oi_mon_col])
+            for i in range(4)  # Engineering, MC, T&SI, Nuclear
         )
-        _oi_prev = 0
-        if month_idx > 0:
-            _oi_prev = sum(
-                safe_float(df_oi.iloc[R.get(k, d) + _oi_offset, _oi_mon_col - 1])
-                for k, d in [
-                    ("Slide6_ENG", 544), ("Slide6_MC", 545),
-                    ("Slide6_TSI", 546), ("Slide6_NUC", 547),
-                ]
-            )
+        _oi_prev = sum(
+            safe_float(df_oi.iloc[_oi_eng_row + i, _oi_mon_col - 1])
+            for i in range(4)
+        ) if month_idx > 0 else 0
         oi_callout_mon = _oi_curr - _oi_prev
     else:
         oi_callout_mon = oi_mon_total  # fallback
@@ -2481,7 +2480,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     oi_projects = []
     if df_oi is not None:
         oi_col = O.get("OI_Col_Base", 6) + month_idx
-        oi_data_end = R.get("Categories_OI_kTL", 543)
+        oi_data_end = _oi_cats_row  # stop just before the BU summary header row
 
         for idx in range(2, oi_data_end):
             row = df_oi.iloc[idx]
@@ -2977,6 +2976,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     from pptx.oxml.ns import qn as _qn
 
     extra_wip_slides = 0
+    _neg_slide_blank = None  # pre-created before slide 7 is populated (set inside if block below)
 
     if wip_slide_rows:
         # ── Step 1: Calculate chunks ──────────────────────────────────
@@ -2990,9 +2990,12 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             f"{len(wip_chunks)} slide(s) ({MAX_ROWS_PER_SLIDE} rows/slide max)"
         )
 
-        # ── Step 2 & 3: Pre-create overflow slides from clean WIP template ──
-        # Copy from prs.slides[7] NOW, before it gets populated with content.
-        # source_slide_idx=7 ensures we get the clean template sidebar branding.
+        # ── Step 2 & 3: Pre-create overflow + negative slides from clean WIP template ──
+        # ALL blank slides that need WIP branding must be created NOW, before slide 7
+        # is populated with content. After population, add_blank_slide would copy the
+        # table into every new slide created from source_slide_idx=7.
+        _neg_slide_blank = add_blank_slide(prs, source_slide_idx=7) if wip_negative_rows else None
+
         overflow_slides = []
         for chunk_idx in range(1, len(wip_chunks)):
             new_slide = add_blank_slide(prs, source_slide_idx=7)
@@ -3047,7 +3050,9 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     # ── Negative WIP slide (dedicated slide after all positive WIP slides) ────────
     _last_pos_wip_idx = 7 + extra_wip_slides  # last positive WIP slide index (before negative increment)
     if wip_negative_rows:
-        _neg_slide = add_blank_slide(prs, source_slide_idx=7)
+        # Use the blank pre-created before slide 7 was populated; fall back to creating
+        # a fresh one (the filter fix in add_blank_slide makes this safe either way).
+        _neg_slide = _neg_slide_blank if _neg_slide_blank is not None else add_blank_slide(prs, source_slide_idx=1)
 
         # Reorder: insert immediately after the last positive WIP slide
         _sldIdLst2 = prs.part._element.find(_qn("p:sldIdLst"))
@@ -3065,11 +3070,11 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             "WIP (Work In Progress) — Negative Projects",
             f"{month} {year}",
         )
-        _slide_total_wip = sum(r["wip_tl"] for r in wip_slide_rows)
+        _all_positive_wip = sum(r["wip_tl"] for r in wip_excel_rows)
         add_wip_negative_table_to_slide(
             _neg_slide,
             wip_negative_rows,
-            _slide_total_wip,
+            _all_positive_wip,
             slide_num=7 + extra_wip_slides,
         )
         print(f"  [WIP] Created Negative Projects slide at position {7 + extra_wip_slides}")
@@ -3243,7 +3248,10 @@ def _find_best_excel(month_filter=None):
         ):
             candidate_paths.append(full)
 
-    # Parse (month, major, minor) from each candidate
+    # Parse sort key (date_prefix, major, minor) from each candidate.
+    # date_prefix (YYMMDD as int) is the primary key so a newer year always
+    # beats an older one regardless of version number — e.g. 260331_v1.0
+    # correctly beats 220331_v4.2 for the same month.
     def _parse(fpath):
         fname = os.path.basename(fpath)
         month = None
@@ -3251,51 +3259,58 @@ def _find_best_excel(month_filter=None):
             if m.lower() in fname.lower():
                 month = m
                 break
+        date_match = re.match(r'^(\d{6})', fname)
+        date_pfx = int(date_match.group(1)) if date_match else 0
         ver = re.search(r'[vV](\d+)[._]?(\d*)', fname)
         major = int(ver.group(1)) if ver else 0
         minor = int(ver.group(2)) if ver and ver.group(2) else 0
-        return month, (major, minor)
+        return month, (date_pfx, major, minor)
 
-    # Group by month → keep highest version
-    best = {}  # month → (filepath, version_tuple)
+    # Group by month → keep highest (date_prefix, major, minor).
+    # On a tie, prefer files without "copy" in the name.
+    def _is_copy(fpath):
+        return "copy" in os.path.basename(fpath).lower()
+
+    best = {}  # month → (filepath, (date_pfx, major, minor))
     no_month = []
     for fpath in candidate_paths:
-        month, ver = _parse(fpath)
+        month, sort_key = _parse(fpath)
         if month:
-            if month not in best or ver > best[month][1]:
-                best[month] = (fpath, ver)
+            if month not in best:
+                best[month] = (fpath, sort_key)
+            elif sort_key > best[month][1]:
+                best[month] = (fpath, sort_key)
+            elif sort_key == best[month][1] and _is_copy(best[month][0]) and not _is_copy(fpath):
+                best[month] = (fpath, sort_key)  # prefer non-copy on tie
         else:
             no_month.append(fpath)
+
+    def _ver_str(sort_key):
+        _, maj, mn = sort_key
+        return f"v{maj}.{mn}"
 
     if month_filter:
         m_cap = month_filter.strip().capitalize()
         # Try full name match first
         if m_cap in best:
-            chosen, ver = best[m_cap]
-            print(f"[Auto-detect] Month='{m_cap}' -> {os.path.basename(chosen)} (v{ver[0]}.{ver[1]})")
+            chosen, sk = best[m_cap]
+            print(f"[Auto-detect] Month='{m_cap}' -> {os.path.basename(chosen)} ({_ver_str(sk)})")
             return chosen
         # Try abbreviation (e.g. "jan" → "January")
         for m in _MONTHS_FULL:
             if m.lower().startswith(m_cap.lower()):
                 if m in best:
-                    chosen, ver = best[m]
-                    print(f"[Auto-detect] Month='{m}' -> {os.path.basename(chosen)} (v{ver[0]}.{ver[1]})")
+                    chosen, sk = best[m]
+                    print(f"[Auto-detect] Month='{m}' -> {os.path.basename(chosen)} ({_ver_str(sk)})")
                     return chosen
         print(f"[Auto-detect] No Budget Analysis file found for month '{month_filter}'")
         print(f"  Available months: {sorted(best.keys(), key=lambda x: _MONTHS_FULL.index(x))}")
         return None
 
-    # No month filter: pick the entry with the latest (date_prefix, version)
-    # Use the YYMMDD prefix from the filename so Dec-2025 ranks below Jan-2026, etc.
+    # No month filter: pick the entry with the highest (date_prefix, major, minor)
     if best:
-        def _sort_key(item):
-            _, (fpath, (maj, mn)) = item
-            fname = os.path.basename(fpath)
-            date_match = re.match(r'^(\d{6})', fname)
-            date_prefix_val = int(date_match.group(1)) if date_match else 0
-            return (date_prefix_val, maj, mn)
-        latest_month, (latest_file, latest_ver) = max(best.items(), key=_sort_key)
-        print(f"[Auto-detect] Latest: {os.path.basename(latest_file)}  (month={latest_month}, v{latest_ver[0]}.{latest_ver[1]})")
+        latest_month, (latest_file, latest_sk) = max(best.items(), key=lambda item: item[1][1])
+        print(f"[Auto-detect] Latest: {os.path.basename(latest_file)}  (month={latest_month}, {_ver_str(latest_sk)})")
         if len(best) > 1:
             print(f"  Other available months: {[m for m in sorted(best.keys(), key=lambda x: _MONTHS_FULL.index(x)) if m != latest_month]}")
         return latest_file
