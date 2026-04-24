@@ -63,8 +63,8 @@ Files named: `260331_Project_Budget_Analysis_March_v1.0.xlsx`
 | Code | Full Name |
 |------|-----------|
 | ENG | Engineering |
-| MC | MC (Metal Construction) |
-| T&SI | TSI (Technical Services & Innovation) |
+| MC | MC (Management Consultancy) |
+| T&SI | TSI (Technology & Smart Infrastructures) |
 | NUC | Nuclear |
 
 ## Running the Dashboard

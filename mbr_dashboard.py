@@ -704,9 +704,10 @@ def chart_stacked(data, title, keys, color_palette=None):
         plot_bgcolor="white",
         font=dict(family="Segoe UI", color=PRIMARY),
         xaxis_tickangle=-45,
-        margin=dict(t=60, b=20),
+        margin=dict(t=80, b=20),
         uniformtext_minsize=8, uniformtext_mode="hide",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend_title_text="",
     )
     fig.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
     return fig
@@ -728,10 +729,12 @@ def chart_grouped(data, title, keys, color_palette=None):
         plot_bgcolor="white",
         font=dict(family="Segoe UI", color=PRIMARY),
         xaxis_tickangle=-45,
-        margin=dict(t=60, b=20),
+        margin=dict(t=80, b=20),
+        uniformtext_minsize=8, uniformtext_mode="hide",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend_title_text="",
     )
-    fig.update_traces(texttemplate="%{y:,.0f}", textposition="outside", cliponaxis=False)
+    fig.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
     return fig
 
 
@@ -1612,7 +1615,7 @@ with tab5:
 # ── Tab 6: Scenarios ──────────────────────────────────────────────────────────
 with tab6:
     st.markdown("### Scenarios")
-    sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients"])
+    sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients", "BU Mix"])
 
     _sm_latest   = selected_months[-1]
     _d_latest    = loaded_data.get(_sm_latest)
@@ -1673,7 +1676,8 @@ with tab6:
                 plot_bgcolor="white",
                 font=dict(family="Segoe UI", color=PRIMARY),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(t=60, b=20),
+                legend_title_text="",
+                margin=dict(t=80, b=20),
             )
             _fig_tier.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
             st.plotly_chart(_fig_tier, use_container_width=True, key="sc_butiertotal")
@@ -1805,7 +1809,8 @@ with tab6:
                     plot_bgcolor="white",
                     font=dict(family="Segoe UI", color=PRIMARY),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                    margin=dict(t=60, b=20),
+                    legend_title_text="",
+                    margin=dict(t=80, b=20),
                 )
                 _fig_pipe.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
                 st.plotly_chart(_fig_pipe, use_container_width=True, key="sc_pipeline")
@@ -1903,3 +1908,165 @@ with tab6:
             )
         else:
             st.info("No client data available for the selected period.")
+
+    # ── S5: BU Mix ────────────────────────────────────────────────────────────
+    with sc_tabs[4]:
+        st.markdown("#### BU Mix — Include / Exclude Business Units")
+        st.caption(
+            "Toggle BUs on/off to see the combined NS and EBIT for your selection, "
+            "the impact of excluded BUs, and each selection's share of the company total. "
+            "Covers all selected months."
+        )
+
+        _mix_bu_cols = st.columns(4)
+        _bu_active = {
+            bu: _mix_bu_cols[i].checkbox(bu, value=True, key=f"sc_mix_{bu}")
+            for i, bu in enumerate(["ENG", "MC", "T&SI", "NUC"])
+        }
+        _sel_bus = [b for b, on in _bu_active.items() if on]
+        _all_bus = ["ENG", "MC", "T&SI", "NUC"]
+
+        if not _sel_bus:
+            st.warning("Select at least one Business Unit.")
+        else:
+            _mix_summary  = []
+            _mix_chart_rows = []
+
+            for _sm in selected_months:
+                _d = loaded_data.get(_sm)
+                if not _d:
+                    continue
+                _abbr = _sm.split()[0][:3]
+
+                _ns_bu, _ebit_bu = {}, {}
+                for _bu in _all_bus:
+                    _bd = _d["bu_ns"][_bu]
+                    _mi = _cat_index(_bd["cats"], _abbr)
+                    _ns_bu[_bu] = sum(
+                        monthly_val(_bd[t], _bd["cats"], _mi) for t in ["Order", "Offer", "Opp"]
+                    ) if _mi != -1 else 0
+
+                    _be = _d["bu_ebit"][_bu]
+                    _ei = _cat_index(_be["cats"], _abbr)
+                    _ebit_bu[_bu] = monthly_val(_be["Total"], _be["cats"], _ei) if _ei != -1 else 0
+
+                    _mix_chart_rows.append({
+                        "Period":  _sm_label(_sm),
+                        "BU":      _bu,
+                        "NS":      _ns_bu[_bu],
+                        "EBIT":    _ebit_bu[_bu],
+                    })
+
+                _ns_s  = sum(_ns_bu[b]   for b in _sel_bus)
+                _ns_a  = sum(_ns_bu[b]   for b in _all_bus)
+                _eb_s  = sum(_ebit_bu[b] for b in _sel_bus)
+                _eb_a  = sum(_ebit_bu[b] for b in _all_bus)
+
+                _mix_summary.append({
+                    "Period":     _sm_label(_sm),
+                    "NS Sel":     _ns_s,
+                    "NS Total":   _ns_a,
+                    "NS Excl":    _ns_a - _ns_s,
+                    "NS Pct":     _ns_s / _ns_a if _ns_a else 0,
+                    "EBIT Sel":   _eb_s,
+                    "EBIT Total": _eb_a,
+                    "EBIT Excl":  _eb_a - _eb_s,
+                    "EBIT Pct":   _eb_s / _eb_a if _eb_a else 0,
+                })
+
+            # ── Latest-month metric cards ─────────────────────────────────────
+            if _mix_summary:
+                _lr = _mix_summary[-1]
+                _sel_label = ", ".join(_sel_bus) if _sel_bus else "none"
+                st.markdown(f"**{_lr['Period']} — Selected: {_sel_label}**")
+                _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                _mc1.metric(
+                    "NS — Selected BUs",
+                    human_k(_lr["NS Sel"]),
+                    delta=f"−{human_k(_lr['NS Excl'])} excluded  |  {_lr['NS Pct']:.0%} of total",
+                    delta_color="off",
+                )
+                _mc2.metric(
+                    "NS — Excluded Impact",
+                    human_k(_lr["NS Excl"]),
+                    delta=f"{1 - _lr['NS Pct']:.0%} of total",
+                    delta_color="off",
+                )
+                _mc3.metric(
+                    "EBIT — Selected BUs",
+                    human_k(_lr["EBIT Sel"]),
+                    delta=f"−{human_k(_lr['EBIT Excl'])} excluded  |  {_lr['EBIT Pct']:.0%} of total",
+                    delta_color="off",
+                )
+                _mc4.metric(
+                    "EBIT — Excluded Impact",
+                    human_k(_lr["EBIT Excl"]),
+                    delta=f"{1 - _lr['EBIT Pct']:.0%} of total",
+                    delta_color="off",
+                )
+
+            # ── Charts ────────────────────────────────────────────────────────
+            if _mix_chart_rows:
+                _df_mix = pd.DataFrame(_mix_chart_rows)
+                _df_mix["NS_label"]   = _df_mix["NS"].apply(human_k)
+                _df_mix["EBIT_label"] = _df_mix["EBIT"].apply(human_k)
+
+                _color_map = {
+                    bu: (BU_COLORS.get(bu, "#888888") if bu in _sel_bus else "#D1D5DB")
+                    for bu in _all_bus
+                }
+
+                _fig_mix_ns = px.bar(
+                    _df_mix, x="BU", y="NS", color="BU",
+                    facet_col="Period" if len(selected_months) > 1 else None,
+                    text="NS_label",
+                    title="Net Sales by BU — active (coloured) vs excluded (grey)",
+                    color_discrete_map=_color_map,
+                )
+                _fig_mix_ns.update_layout(
+                    plot_bgcolor="white",
+                    font=dict(family="Segoe UI", color=PRIMARY),
+                    showlegend=False,
+                    margin=dict(t=60, b=20),
+                )
+                _fig_mix_ns.update_traces(textposition="outside", cliponaxis=False)
+                st.plotly_chart(_fig_mix_ns, use_container_width=True, key="sc_mix_ns")
+
+                _fig_mix_eb = px.bar(
+                    _df_mix, x="BU", y="EBIT", color="BU",
+                    facet_col="Period" if len(selected_months) > 1 else None,
+                    text="EBIT_label",
+                    title="EBIT by BU — active (coloured) vs excluded (grey)",
+                    color_discrete_map=_color_map,
+                )
+                _fig_mix_eb.update_layout(
+                    plot_bgcolor="white",
+                    font=dict(family="Segoe UI", color=PRIMARY),
+                    showlegend=False,
+                    margin=dict(t=60, b=20),
+                )
+                _fig_mix_eb.update_traces(textposition="outside", cliponaxis=False)
+                st.plotly_chart(_fig_mix_eb, use_container_width=True, key="sc_mix_ebit")
+
+            # ── Summary table (all months) ────────────────────────────────────
+            if _mix_summary:
+                st.markdown("**Summary across all selected months**")
+                _df_mix_tbl = pd.DataFrame([{
+                    "Period":            r["Period"],
+                    "NS Selected":       human_k(r["NS Sel"]),
+                    "NS Total":          human_k(r["NS Total"]),
+                    "NS Excl. Impact":   human_k(r["NS Excl"]),
+                    "NS Coverage":       f"{r['NS Pct']:.0%}",
+                    "EBIT Selected":     human_k(r["EBIT Sel"]),
+                    "EBIT Total":        human_k(r["EBIT Total"]),
+                    "EBIT Excl. Impact": human_k(r["EBIT Excl"]),
+                    "EBIT Coverage":     f"{r['EBIT Pct']:.0%}",
+                } for r in _mix_summary])
+                st.dataframe(_df_mix_tbl, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "⬇ Export BU Mix to Excel",
+                    df_to_excel_bytes(_df_mix_tbl),
+                    file_name="BU_Mix_Scenario.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="sc_mix_export",
+                )
