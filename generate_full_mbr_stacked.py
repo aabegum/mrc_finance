@@ -1077,9 +1077,8 @@ def add_second_callout_box(
 
     MAX_BOT = Inches(7.40)
     available = MAX_BOT - top
-    # 1 header line + N project lines, each 0.22" tall
     n_proj = len(lines)
-    header_h = Inches(0.28)
+    header_h = Inches(0.28) if title else Inches(0.0)
     per_line_h = Inches(0.22)
     needed = header_h + per_line_h * n_proj + Inches(0.10)
 
@@ -1111,17 +1110,20 @@ def add_second_callout_box(
     tf = tb.text_frame
     tf.word_wrap = False  # prevent wrapping — truncation handles length
 
-    # Header row
-    p_hdr = tf.paragraphs[0]
-    p_hdr.text = title
-    p_hdr.font.name = FONT_FAMILY
-    p_hdr.font.bold = True
-    p_hdr.font.size = Pt(font_pt + 1.0)
-    p_hdr.font.color.rgb = _border
-    p_hdr.space_after = Pt(2)
+    # Header row (omitted when title is empty — e.g. continuation box)
+    if title:
+        p_hdr = tf.paragraphs[0]
+        p_hdr.text = title
+        p_hdr.font.name = FONT_FAMILY
+        p_hdr.font.bold = True
+        p_hdr.font.size = Pt(font_pt + 1.0)
+        p_hdr.font.color.rgb = _border
+        p_hdr.space_after = Pt(2)
 
     # One project per line: "▸ Name — value"
+    # When no title, reuse the first (empty) paragraph for the first project to avoid a blank line
     max_name_chars = max(18, int(width / Inches(0.065)) - 12)
+    _use_first_para = not title
     for _lbl, _val_str in lines:
         # _lbl is "#N", _val_str is "Name: value" — split on last ": " to get name+val
         if ": " in _val_str:
@@ -1131,7 +1133,11 @@ def add_second_callout_box(
         proj_short = proj_name[:max_name_chars] + "…" if len(proj_name) > max_name_chars else proj_name
         row_text = f"▸ {proj_short}  —  {val_part}" if val_part else f"▸ {proj_short}"
 
-        p = tf.add_paragraph()
+        if _use_first_para:
+            p = tf.paragraphs[0]
+            _use_first_para = False
+        else:
+            p = tf.add_paragraph()
         p.text = row_text
         p.font.name = FONT_FAMILY
         p.font.size = Pt(font_pt)
@@ -2168,7 +2174,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     _oi_col_end   = C.get("OI_kTL_End", 18)
     _oi_cats_cfg  = R.get("Categories_OI_kTL", 543)
     _oi_cats_row  = _oi_cats_cfg  # default
-    for _probe in range(_oi_cats_cfg - 2, _oi_cats_cfg + 5):
+    for _probe in range(max(0, _oi_cats_cfg - 10), min(len(df_oi), _oi_cats_cfg + 70)):
         if 0 <= _probe < len(df_oi):
             _c4 = str(df_oi.iloc[_probe, _oi_col_start]).strip()
             _c6 = str(df_oi.iloc[_probe, _oi_col_start + 2]).strip()
@@ -2884,14 +2890,37 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
                 )
 
                 # Second callout (left side) — ALL ABNS projects, green border
+                # Split into two side-by-side boxes when project count exceeds threshold
                 if oi_abns_all:
-                    add_second_callout_box(
-                        prs.slides[1],
-                        abns_lines,
-                        left=Inches(0.45),
-                        top=Inches(6.15),
-                        width=Inches(4.0),
-                    )
+                    _abns_split_at = config.get("APP.Formatting.ABNS_Split_At", 5)
+                    _abns_top = Inches(6.15)
+                    if len(abns_lines) > _abns_split_at:
+                        _box_w = Inches(4.5)
+                        _gap   = Inches(0.20)
+                        _split = (len(abns_lines) + 1) // 2  # first box gets the larger half
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines[:_split],
+                            left=Inches(0.45),
+                            top=_abns_top,
+                            width=_box_w,
+                        )
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines[_split:],
+                            left=Inches(0.45) + _box_w + _gap,
+                            top=_abns_top,
+                            width=_box_w,
+                            title="",  # no duplicate header on second box
+                        )
+                    else:
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines,
+                            left=Inches(0.45),
+                            top=_abns_top,
+                            width=Inches(4.0),
+                        )
             elif slide_idx == 2:  # GR kEUR
                 add_callout_box(
                     prs.slides[2],

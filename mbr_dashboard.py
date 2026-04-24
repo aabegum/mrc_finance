@@ -924,13 +924,22 @@ if run_btn and sel_file:
         )
     if result.returncode == 0:
         st.success(f"Report generated successfully for {gen_month}!")
+        done_line = next(
+            (l.strip() for l in result.stdout.splitlines() if l.strip().startswith("[DONE]")),
+            None,
+        )
+        if done_line:
+            st.info(done_line.removeprefix("[DONE]").strip())
+        if result.stdout:
+            with st.expander("Show generation log", expanded=False):
+                st.code(result.stdout, language="")
     else:
         st.error("Generator encountered an error — see details below.")
-    if result.stdout:
-        st.code(result.stdout, language="")
-    if result.stderr:
-        with st.expander("Error details"):
-            st.code(result.stderr, language="")
+        if result.stdout:
+            st.code(result.stdout, language="")
+        if result.stderr:
+            with st.expander("Error details", expanded=True):
+                st.code(result.stderr, language="")
     st.markdown("---")
 
 
@@ -1368,8 +1377,12 @@ with tab4:
                             proj_sel=wip_proj_sel, proj_text=wip_proj_text,
                             cli_sel=wip_cli_sel, cli_text=wip_cli_text)
 
-# ── Tab 5: Project History ────────────────────────────────────────────────────
-with tab5:
+# ── Tab fragments ─────────────────────────────────────────────────────────────
+# Each fragment reruns independently on internal widget changes so the outer
+# st.tabs() selection is never reset when the user interacts with filters.
+
+@st.fragment
+def _render_project_history(loaded_data, selected_months, global_bu_view, multi_year):
     st.markdown("### Project History")
     st.caption(
         "Track project-based monthly Production (TL) and project WIP TL history. "
@@ -1612,8 +1625,10 @@ with tab5:
     else:
         st.error("Could not load margin data from 'Ext. Prod.' sheet. Verify the sheet exists and has the correct structure.")
 
-# ── Tab 6: Scenarios ──────────────────────────────────────────────────────────
-with tab6:
+
+@st.fragment
+def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
+    _sm_label  = lambda sm: sm if multi_year else sm.split()[0]
     st.markdown("### Scenarios")
     sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients", "BU Mix"])
 
@@ -1662,22 +1677,30 @@ with tab6:
             _fig_busum.update_traces(textposition="outside", cliponaxis=False)
             st.plotly_chart(_fig_busum, use_container_width=True, key="sc_busum")
 
-            # Tier breakdown per BU
+            # Tier breakdown per BU — color each (BU, Tier) using bu_tier_colors
             _df_tier = _df_sc.groupby(["BU", "Tier"])["Value"].sum().reset_index()
-            _tier_colors = {"Order": "#0EA5E9", "Offer": "#93C5FD", "Opp": "#CBD5E1"}
+            _df_tier["BU_Tier"] = _df_tier["BU"] + " " + _df_tier["Tier"]
+            _bu_tier_cmap = {}
+            for _buc in ["ENG", "MC", "T&SI", "NUC"]:
+                _tc = bu_tier_colors(_buc)
+                _bu_tier_cmap[f"{_buc} Order"] = _tc[0]
+                _bu_tier_cmap[f"{_buc} Offer"] = _tc[1]
+                _bu_tier_cmap[f"{_buc} Opp"]   = _tc[2]
             _fig_tier = px.bar(
-                _df_tier, x="BU", y="Value", color="Tier",
+                _df_tier, x="BU", y="Value", color="BU_Tier",
                 barmode="stack",
                 title="NS Tier Breakdown by BU",
-                color_discrete_map=_tier_colors,
-                category_orders={"Tier": ["Order", "Offer", "Opp"]},
+                color_discrete_map=_bu_tier_cmap,
+                category_orders={"BU_Tier": [
+                    f"{b} {t}" for b in ["ENG", "MC", "T&SI", "NUC"]
+                    for t in ["Order", "Offer", "Opp"]
+                ]},
             )
             _fig_tier.update_layout(
                 plot_bgcolor="white",
                 font=dict(family="Segoe UI", color=PRIMARY),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                legend_title_text="",
-                margin=dict(t=80, b=20),
+                showlegend=False,
+                margin=dict(t=60, b=20),
             )
             _fig_tier.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
             st.plotly_chart(_fig_tier, use_container_width=True, key="sc_butiertotal")
@@ -2070,3 +2093,12 @@ with tab6:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="sc_mix_export",
                 )
+
+
+# ── Tab 5: Project History ────────────────────────────────────────────────────
+with tab5:
+    _render_project_history(loaded_data, selected_months, global_bu_view, _multi_year)
+
+# ── Tab 6: Scenarios ──────────────────────────────────────────────────────────
+with tab6:
+    _render_scenarios(loaded_data, selected_months, global_bu_view, _multi_year)
