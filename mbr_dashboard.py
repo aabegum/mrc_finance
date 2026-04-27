@@ -103,6 +103,11 @@ C = {
     "WIP_Col_TotalInvoiceOC": _c_cfg.get("WIP_Col_TotalInvoiceOC", 93),
     "WIP_Col_TotalProdOC":    _c_cfg.get("WIP_Col_TotalProdOC", 94),
     "WIP_Col_WIP_TL":         _c_cfg.get("WIP_Col_WIP_TL", 98),
+    "GM_STATUS":              _c_cfg.get("GM_STATUS", 6),
+    "GM_ITEM":                _c_cfg.get("GM_ITEM",   7),
+    "GM_PROJ":                _c_cfg.get("GM_PROJ",   4),
+    "GM_CLIENT":              _c_cfg.get("GM_CLIENT", 2),
+    "GM_TOTAL":               _c_cfg.get("GM_TOTAL",  25),
 }
 
 # WIP minimum threshold — from config, falls back to 1 M TL
@@ -157,6 +162,22 @@ def human_tl(v):
     if av >= 1_000:
         return f"{sign}{av / 1_000:.1f}k"
     return f"{sign}{av:,.0f}"
+
+
+def fmt_ktl(v, d=2):
+    """Format a kTL value with d decimal places and thousand separators."""
+    try:
+        return f"{float(v):,.{d}f}"
+    except Exception:
+        return "0.00"
+
+
+def fmt_tl_as_ktl(v, d=2):
+    """Convert raw TL to kTL and format with d decimal places."""
+    try:
+        return f"{float(v) / 1000:,.{d}f}"
+    except Exception:
+        return "0.00"
 
 
 def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -234,6 +255,18 @@ def _cat_index(cats, label):
     label_l = str(label).lower()
     for i, c in enumerate(cats):
         if str(c).lower() == label_l:
+            return i
+    return -1
+
+
+def _find_eoy_idx(cats):
+    """Return index of the end-of-year column (Dec or current-year label). Returns -1 if not found."""
+    for i, c in enumerate(cats):
+        if str(c).strip().lower()[:3] == "dec":
+            return i
+    yr = str(datetime.now().year)
+    for i, c in enumerate(cats):
+        if str(c).strip() == yr:
             return i
     return -1
 
@@ -341,8 +374,9 @@ def load_month(filepath: str):
             })
     oi_projects.sort(key=lambda x: x["value"], reverse=True)
 
-    # WIP projects — Nuclear excluded per business rule
-    wip_projects = []
+    # WIP projects — Nuclear excluded by default but collected separately for optional display
+    wip_projects     = []
+    wip_projects_nuc = []
     for ri in range(R["WIP_DataStartRow"], len(df_wip)):
         row       = df_wip.iloc[ri]
         proj_type = str(row.iloc[C["WIP_Col_Type"]]).strip()   if pd.notna(row.iloc[C["WIP_Col_Type"]])   else ""
@@ -353,12 +387,12 @@ def load_month(filepath: str):
             continue
         bu_raw = str(row.iloc[C["WIP_Col_BU"]]).strip() if pd.notna(row.iloc[C["WIP_Col_BU"]]) else ""
         bu     = BU_ABBREV.get(bu_raw, bu_raw)
-        if bu == "NUC":
-            continue
         wip_tl = safe_float(row.iloc[C["WIP_Col_WIP_TL"]])
-        if wip_tl < WIP_MIN_TL:
+        # Mirror reporting code: skip zeros and near-zero negatives (-1000 < wip_tl <= 0)
+        # Include: significant positives (>= WIP_MIN_TL) and significant negatives (< -1000)
+        if wip_tl > -1000 and wip_tl < WIP_MIN_TL:
             continue
-        wip_projects.append({
+        _entry = {
             "name":          str(row.iloc[C["WIP_Col_Name"]]).strip()          if pd.notna(row.iloc[C["WIP_Col_Name"]])          else "",
             "client":        client,
             "bu":            bu,
@@ -366,8 +400,44 @@ def load_month(filepath: str):
             "inv_oc":        safe_float(row.iloc[C["WIP_Col_TotalInvoiceOC"]]),
             "prod_oc":       safe_float(row.iloc[C["WIP_Col_TotalProdOC"]]),
             "wip_tl":        wip_tl,
-        })
-    wip_projects.sort(key=lambda x: x["wip_tl"], reverse=True)
+        }
+        if bu == "NUC":
+            wip_projects_nuc.append(_entry)
+        else:
+            wip_projects.append(_entry)
+
+    def _sort_wip(lst):
+        _pos = sorted([p for p in lst if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
+        _neg = sorted([p for p in lst if p["wip_tl"] < 0],  key=lambda x: x["wip_tl"])
+        return _pos + _neg
+
+    wip_projects     = _sort_wip(wip_projects)
+    wip_projects_nuc = _sort_wip(wip_projects_nuc)
+
+    # ── ABNS from Gross Margin sheet ──────────────────────────────────────────
+    abns_projects: list = []
+    abns_total = 0.0
+    if "Gross Margin" in xl.sheet_names:
+        try:
+            df_gm = pd.read_excel(xl, sheet_name="Gross Margin", header=None)
+            for ri in range(4, df_gm.shape[0]):
+                _row    = df_gm.iloc[ri]
+                _status = str(_row.iloc[C["GM_STATUS"]]).strip().upper() if pd.notna(_row.iloc[C["GM_STATUS"]]) else ""
+                _item   = str(_row.iloc[C["GM_ITEM"]]).strip().upper()   if pd.notna(_row.iloc[C["GM_ITEM"]])   else ""
+                if _status != "ABNS" or _item != "GR":
+                    continue
+                _val = safe_float(_row.iloc[C["GM_TOTAL"]])
+                if _val <= 0:
+                    continue
+                _proj   = str(_row.iloc[C["GM_PROJ"]]).strip()   if pd.notna(_row.iloc[C["GM_PROJ"]])   else ""
+                _client = str(_row.iloc[C["GM_CLIENT"]]).strip() if pd.notna(_row.iloc[C["GM_CLIENT"]]) else ""
+                if not _proj or _proj.lower() in ("nan", "0", ""):
+                    continue
+                abns_projects.append({"project": _proj, "client": _client, "value": _val})
+            abns_projects.sort(key=lambda x: x["value"], reverse=True)
+            abns_total = sum(p["value"] for p in abns_projects)
+        except Exception:
+            pass
 
     # ── BU-level data ──────────────────────────────────────────────────────────
     c_ns_s   = _c_cfg.get("BU_NS_Start",   52)
@@ -418,9 +488,18 @@ def load_month(filepath: str):
         "Contract+WP+WO": row_vals(df, R["Slide4_Contract_WP_WO"], 1, 16),
     }
 
+    # ── EBIT % / Net Fees % rows (rows 67/68/69 in Excel = 66/67/68 0-indexed) ──
+    ebit_pct_out = {
+        "cats":            cats_ebit,
+        "EBIT_Pct":        row_vals(df, _r_cfg.get("EBIT_Pct_Actual",  66), 1, 16),
+        "EBIT_Pct_Budget": row_vals(df, _r_cfg.get("EBIT_Pct_Budget",  67), 1, 16),
+        "NetFees_Pct":     row_vals(df, _r_cfg.get("Net_Fees_Pct",     68), 1, 16),
+    }
+
     return {
-        "ns":  ns_out,
-        "ebit": ebit_out,
+        "ns":       ns_out,
+        "ebit":     ebit_out,
+        "ebit_pct": ebit_pct_out,
         "oi": {
             "cats": cats_oi,
             "ENG":  [safe_float(df_oi.iloc[R["Slide6_ENG"] + _oi_offset, c]) for c in range(4, 18)],
@@ -428,10 +507,13 @@ def load_month(filepath: str):
             "T&SI": [safe_float(df_oi.iloc[R["Slide6_TSI"] + _oi_offset, c]) for c in range(4, 18)],
             "NUC":  [safe_float(df_oi.iloc[R["Slide6_NUC"] + _oi_offset, c]) for c in range(4, 18)],
         },
-        "oi_projects":  oi_projects,
-        "wip_projects": wip_projects,
-        "bu_ns":        bu_ns,
-        "bu_ebit":      bu_ebit,
+        "oi_projects":      oi_projects,
+        "wip_projects":     wip_projects,
+        "wip_projects_nuc": wip_projects_nuc,
+        "abns_projects":    abns_projects,
+        "abns_total":     abns_total,
+        "bu_ns":          bu_ns,
+        "bu_ebit":        bu_ebit,
     }
 
 
@@ -690,6 +772,11 @@ def chart_stacked(data, title, keys, color_palette=None):
     for k in keys:
         df[k] = data[k][:n]
     df_m = df.melt("Category", var_name="Tier", value_name="Value")
+    # Abbreviated labels — hide if segment is too small to be legible
+    _seg_max = df_m["Value"].abs().max() or 1
+    df_m["Label"] = df_m["Value"].apply(
+        lambda v: human_k(v) if abs(v) / _seg_max >= 0.03 else ""
+    )
     colors = color_palette or (
         [BU_COLORS.get(k, "#0EA5E9") for k in keys]
         if any(k in BU_COLORS for k in keys)
@@ -698,18 +785,22 @@ def chart_stacked(data, title, keys, color_palette=None):
     fig = px.bar(
         df_m, x="Category", y="Value", color="Tier", title=title,
         color_discrete_sequence=colors, barmode="stack",
-        hover_data={"Value": ":,.0f"},
+        text="Label", hover_data={"Value": ":,.0f"},
     )
     fig.update_layout(
         plot_bgcolor="white",
         font=dict(family="Segoe UI", color=PRIMARY),
         xaxis_tickangle=-45,
         margin=dict(t=80, b=20),
-        uniformtext_minsize=8, uniformtext_mode="hide",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         legend_title_text="",
     )
-    fig.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
+    fig.update_traces(
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        cliponaxis=False,
+    )
     return fig
 
 
@@ -719,22 +810,30 @@ def chart_grouped(data, title, keys, color_palette=None):
     for k in keys:
         df[k] = data[k][:n]
     df_m   = df.melt("Category", var_name="Tier", value_name="Value")
+    _seg_max = df_m["Value"].abs().max() or 1
+    df_m["Label"] = df_m["Value"].apply(
+        lambda v: human_k(v) if abs(v) / _seg_max >= 0.05 else ""
+    )
     colors = color_palette or ["#0EA5E9", "#10B981", "#F59E0B"]
     fig    = px.bar(
         df_m, x="Category", y="Value", color="Tier", title=title,
         color_discrete_sequence=colors,
-        barmode="group", hover_data={"Value": ":,.0f"},
+        barmode="group", text="Label", hover_data={"Value": ":,.0f"},
     )
     fig.update_layout(
         plot_bgcolor="white",
         font=dict(family="Segoe UI", color=PRIMARY),
         xaxis_tickangle=-45,
         margin=dict(t=80, b=20),
-        uniformtext_minsize=8, uniformtext_mode="hide",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         legend_title_text="",
     )
-    fig.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
+    fig.update_traces(
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+        cliponaxis=False,
+    )
     return fig
 
 
@@ -985,6 +1084,7 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
 
     month_abbr = sm.split()[0][:3]
     ns_idx     = _cat_index(ns["cats"], month_abbr)
+    eoy_idx    = _find_eoy_idx(ns["cats"])
 
     # Metric cards show per-month delta; charts use the full cumulative array
     totals = {k: monthly_val(ns[k], ns["cats"], ns_idx) for k in k_list}
@@ -999,11 +1099,33 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
             prev_totals["Total"] = sum(prev_totals.values())
 
     all_metric_keys = k_list + ["Total"]
+
+    st.caption(f"Monthly — {sm} (kTL)")
     mcols = st.columns(len(all_metric_keys))
     for idx_m, k in enumerate(all_metric_keys):
         val   = totals[k]
         delta = val - prev_totals.get(k, 0) if prev_totals else None
-        mcols[idx_m].metric(k, human_k(val), delta=human_k(delta) if delta is not None else None)
+        mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+
+    if ns_idx != -1:
+        st.caption("YTD Cumulative (kTL)")
+        ytd_cols  = st.columns(len(all_metric_keys))
+        ytd_total = 0.0
+        for idx_m, k in enumerate(k_list):
+            ytd_val = ns[k][ns_idx] if ns_idx < len(ns[k]) else 0.0
+            ytd_total += ytd_val
+            ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
+        ytd_cols[len(k_list)].metric("YTD Total", fmt_ktl(ytd_total))
+
+    if eoy_idx != -1:
+        st.caption("End of Year (kTL)")
+        eoy_cols  = st.columns(len(all_metric_keys))
+        eoy_total = 0.0
+        for idx_m, k in enumerate(k_list):
+            eoy_val = ns[k][eoy_idx] if eoy_idx < len(ns[k]) else 0.0
+            eoy_total += eoy_val
+            eoy_cols[idx_m].metric(f"EOY {k}", fmt_ktl(eoy_val))
+        eoy_cols[len(k_list)].metric("EOY Total", fmt_ktl(eoy_total))
 
     palette = None if is_total else bu_tier_colors(bu_name)
     st.plotly_chart(
@@ -1024,18 +1146,34 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         p_ebit = prev_data["bu_ebit"][bu_name] if prev_data else None
 
     ebit_idx      = _cat_index(ebit["cats"], month_abbr)
+    eoy_idx       = _find_eoy_idx(ebit["cats"])
     prev_ebit_idx = -1
     if p_ebit and prev_sm:
         prev_abbr     = prev_sm.split()[0][:3]
         prev_ebit_idx = _cat_index(p_ebit["cats"], prev_abbr)
 
     # Metric cards show per-month delta; charts use the full cumulative array
-    mcols = st.columns(min(3, len(k_list)))
+    st.caption(f"Monthly — {sm} (kTL)")
+    mcols = st.columns(len(k_list))
     for idx_m, k in enumerate(k_list):
         val   = monthly_val(ebit[k], ebit["cats"], ebit_idx)
         p_val = monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx) if p_ebit and prev_ebit_idx != -1 else None
         delta = val - p_val if p_val is not None else None
-        mcols[idx_m % len(mcols)].metric(k, human_k(val), delta=human_k(delta) if delta is not None else None)
+        mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+
+    if ebit_idx != -1:
+        st.caption("YTD Cumulative (kTL)")
+        ytd_cols = st.columns(len(k_list))
+        for idx_m, k in enumerate(k_list):
+            ytd_val = ebit[k][ebit_idx] if ebit_idx < len(ebit[k]) else 0.0
+            ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
+
+    if eoy_idx != -1:
+        st.caption("End of Year (kTL)")
+        eoy_cols = st.columns(len(k_list))
+        for idx_m, k in enumerate(k_list):
+            eoy_val = ebit[k][eoy_idx] if eoy_idx < len(ebit[k]) else 0.0
+            eoy_cols[idx_m].metric(f"EOY {k}", fmt_ktl(eoy_val))
 
     ebit_palette = None if is_total else [BU_COLORS.get(bu_name, "#0EA5E9")]
     st.plotly_chart(
@@ -1058,12 +1196,41 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             prev_abbr   = prev_sm.split()[0][:3]
             prev_oi_idx = _cat_index(prev_oi["cats"], prev_abbr)
 
-        # 4-column metric grid (one per BU)
+        # 4-column metric grid (one per BU) — monthly
+        st.caption(f"Monthly — {sm} (kTL)")
         mcols = st.columns(4)
         for idx_m, k in enumerate(keys_oi):
             val   = oi[k][oi_idx] if oi_idx != -1 else 0
             delta = val - prev_oi[k][prev_oi_idx] if prev_oi and prev_oi_idx != -1 else None
-            mcols[idx_m].metric(k, human_k(val), delta=human_k(delta) if delta is not None else None)
+            mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+
+        # YTD OI (sum of monthly columns from Jan to current month)
+        if oi_idx != -1:
+            _oi_base = O.get("MON_OI_Base", 2)
+            st.caption("YTD (kTL)")
+            ytd_cols     = st.columns(5)
+            ytd_oi_total = 0.0
+            for idx_m, k in enumerate(keys_oi):
+                ytd_val = sum(oi[k][i] for i in range(_oi_base, oi_idx + 1) if i < len(oi[k]))
+                ytd_oi_total += ytd_val
+                ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
+            ytd_cols[4].metric("YTD Total", fmt_ktl(ytd_oi_total))
+
+        # ABNS
+        _abns_total = data.get("abns_total", 0.0)
+        _abns_projs = data.get("abns_projects", [])
+        if _abns_total > 0:
+            st.caption("ABNS — Already Booked, Not Started (kTL)")
+            _ac1, _ac2 = st.columns([1, 3])
+            _ac1.metric("Total ABNS", fmt_ktl(_abns_total))
+            if _abns_projs:
+                with _ac2.expander(f"ABNS Projects ({len(_abns_projs)})", expanded=False):
+                    _df_abns = pd.DataFrame(_abns_projs)
+                    _df_abns["Value (kTL)"] = _df_abns["value"].apply(fmt_ktl)
+                    st.dataframe(
+                        _df_abns[["project", "client", "Value (kTL)"]],
+                        hide_index=True, use_container_width=True,
+                    )
 
         # Stacked OI chart (all BUs combined over time)
         st.plotly_chart(
@@ -1079,9 +1246,9 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             p_bg_oi  = [p for p in filter_oi(prev_data["oi_projects"], proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
             delta_oi = total_oi - sum(p["value"] for p in p_bg_oi)
         st.metric(
-            f"Total Order Intake ({len(bg_oi)} projs)",
-            human_k(total_oi),
-            delta=human_k(delta_oi) if delta_oi is not None else None,
+            f"Total Order Intake ({len(bg_oi)} projs) (kTL)",
+            fmt_ktl(total_oi),
+            delta=fmt_ktl(delta_oi) if delta_oi is not None else None,
         )
         fig_bu_oi = chart_projects(bg_oi, "")
         if fig_bu_oi:
@@ -1111,37 +1278,71 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
 
 
 def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
-                    proj_sel=None, proj_text="", cli_sel=None, cli_text=""):
+                    proj_sel=None, proj_text="", cli_sel=None, cli_text="", include_nuc=False):
+    _base_wip = data["wip_projects"]
+    if include_nuc:
+        _combined = _base_wip + data.get("wip_projects_nuc", [])
+        _base_wip = (
+            sorted([p for p in _combined if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
+            + sorted([p for p in _combined if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
+        )
     if is_total:
-        wip       = filter_wip(data["wip_projects"], proj_sel, proj_text, cli_sel, cli_text)
+        wip       = filter_wip(_base_wip, proj_sel, proj_text, cli_sel, cli_text)
         total_wip = sum(p["wip_tl"] for p in wip)
         delta_wip = None
         if prev_data:
-            prev_total = sum(p["wip_tl"] for p in filter_wip(prev_data["wip_projects"], proj_sel, proj_text, cli_sel, cli_text))
-            delta_wip  = human_tl(total_wip - prev_total)
+            _prev_base = prev_data["wip_projects"]
+            if include_nuc:
+                _pc = _prev_base + prev_data.get("wip_projects_nuc", [])
+                _prev_base = (
+                    sorted([p for p in _pc if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
+                    + sorted([p for p in _pc if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
+                )
+            prev_total = sum(p["wip_tl"] for p in filter_wip(_prev_base, proj_sel, proj_text, cli_sel, cli_text))
+            delta_wip  = fmt_tl_as_ktl(total_wip - prev_total)
     else:
-        wip       = [p for p in filter_wip(data["wip_projects"], proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
+        wip       = [p for p in filter_wip(_base_wip, proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
         total_wip = sum(p["wip_tl"] for p in wip)
         delta_wip = None
         if prev_data:
-            prev_wip  = [p for p in filter_wip(prev_data["wip_projects"], proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
-            delta_wip = human_tl(total_wip - sum(p["wip_tl"] for p in prev_wip))
+            _prev_base = prev_data["wip_projects"]
+            if include_nuc:
+                _pc = _prev_base + prev_data.get("wip_projects_nuc", [])
+                _prev_base = (
+                    sorted([p for p in _pc if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
+                    + sorted([p for p in _pc if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
+                )
+            prev_wip  = [p for p in filter_wip(_prev_base, proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
+            delta_wip = fmt_tl_as_ktl(total_wip - sum(p["wip_tl"] for p in prev_wip))
 
-    st.metric(f"Total WIP ({len(wip)} projs)", human_tl(total_wip), delta=delta_wip)
+    _wip_neg_count = sum(1 for p in wip if p["wip_tl"] < 0)
+    _wip_lbl = f"Total WIP ({len(wip)} projs"
+    if _wip_neg_count:
+        _wip_lbl += f", incl. {_wip_neg_count} negative"
+    _wip_lbl += ") (kTL)"
+    st.metric(_wip_lbl, fmt_tl_as_ktl(total_wip), delta=delta_wip)
 
-    fig = chart_wip(wip, "")
+    fig = chart_wip([p for p in wip if p["wip_tl"] > 0], "")
     if fig:
         st.plotly_chart(fig, use_container_width=True, key=f"wip_fig_{bu_name}_{sm}")
     if wip:
-        df_disp          = pd.DataFrame(wip)
+        df_disp           = pd.DataFrame(wip)
         df_disp["WIP TL"] = df_disp["wip_tl"].apply(human_tl)
         cols_show = (
             ["name", "client", "bu", "orig_currency", "WIP TL"]
             if is_total
             else ["name", "client", "orig_currency", "WIP TL"]
         )
+        # Total row
+        _total_entry = {c: "" for c in cols_show}
+        _total_entry["name"]    = "TOTAL"
+        _total_entry["WIP TL"]  = human_tl(total_wip)
+        df_disp_with_total = pd.concat(
+            [df_disp[cols_show], pd.DataFrame([_total_entry])],
+            ignore_index=True,
+        )
         st.dataframe(
-            df_disp[cols_show], hide_index=True,
+            df_disp_with_total, hide_index=True,
             use_container_width=True, key=f"wip_df_{bu_name}_{sm}",
         )
         st.download_button(
@@ -1335,6 +1536,21 @@ with tab3:
 
 # ── Tab 4: WIP ────────────────────────────────────────────────────────────────
 with tab4:
+    wip_include_nuc = st.checkbox(
+        "Include Nuclear (NUC)",
+        value=False,
+        key="wip_include_nuc",
+        help="Nuclear projects are excluded by default. Enable to include NUC WIP in the table and totals.",
+    )
+    # Extend filter sets if NUC is included
+    if wip_include_nuc:
+        for _d in loaded_data.values():
+            if not _d:
+                continue
+            for _p in _d.get("wip_projects_nuc", []):
+                if _p.get("name"):   all_wip_projs.add(_p["name"])
+                if _p.get("client"): all_wip_clients.add(_p["client"])
+
     with st.expander("🔍 Filter by Project / Client", expanded=False):
         wc1, wc2 = st.columns(2)
         with wc1:
@@ -1370,12 +1586,14 @@ with tab4:
                 st.subheader(f"{_sm_label(sm)} WIP")
                 render_wip_view(sm, data, prev_sm, prev_data, is_total, global_bu_view,
                                 proj_sel=wip_proj_sel, proj_text=wip_proj_text,
-                                cli_sel=wip_cli_sel, cli_text=wip_cli_text)
+                                cli_sel=wip_cli_sel, cli_text=wip_cli_text,
+                                include_nuc=wip_include_nuc)
         else:
             st.subheader(f"{_sm_label(sm)} WIP")
             render_wip_view(sm, data, prev_sm, prev_data, is_total, global_bu_view,
                             proj_sel=wip_proj_sel, proj_text=wip_proj_text,
-                            cli_sel=wip_cli_sel, cli_text=wip_cli_text)
+                            cli_sel=wip_cli_sel, cli_text=wip_cli_text,
+                            include_nuc=wip_include_nuc)
 
 # ── Tab fragments ─────────────────────────────────────────────────────────────
 # Each fragment reruns independently on internal widget changes so the outer
@@ -1465,13 +1683,17 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                 "GROSS FEES", "REIMBURSABLES", "SUBCON 1", "SUBCON 2",
                 "ASSOCIATE 1", "ENG. COST", "PROJECT EXP", "PROJECT EXP ACCR",
             ]
-            _available_types = list(proj_info.get("type_data", {}).keys())
+            _all_type_data  = proj_info.get("type_data", {})
+            _available_types = list(_all_type_data.keys())
             _available_types_sorted = (
                 [t for t in _type_order if t in _available_types]
                 + [t for t in _available_types if t not in _type_order]
             )
             if not _available_types_sorted:
                 _available_types_sorted = ["GROSS FEES"]
+            # "All Types" aggregates every cost type into one combined series
+            _ALLTYPE_LABEL = "All Types (Combined)"
+            _dropdown_options = [_ALLTYPE_LABEL] + _available_types_sorted
 
             ph_view_col, ph_type_col = st.columns([2, 2])
             with ph_view_col:
@@ -1484,15 +1706,51 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
             with ph_type_col:
                 ph_cost_type = st.selectbox(
                     "Cost Type",
-                    _available_types_sorted,
+                    _dropdown_options,
                     index=0,
                     key="ph_cost_type",
-                    help="Filter production data by cost type. GROSS FEES is the main project total.",
+                    help=(
+                        "'All Types (Combined)' sums every cost type. "
+                        "GROSS FEES is the main project total. "
+                        "Other types are cost components."
+                    ),
                 ) if ph_view == "Production (Ext. Prod.)" else "GROSS FEES"
 
-            _active_margin_data = proj_info.get("type_data", {}).get(
-                ph_cost_type, proj_info["margin_data"]
-            )
+            # Build the active data: aggregate all types or pick the selected one
+            if ph_cost_type == _ALLTYPE_LABEL:
+                _active_margin_data: dict = {}
+                for _td in _all_type_data.values():
+                    for _k, _v in _td.items():
+                        _active_margin_data[_k] = _active_margin_data.get(_k, 0) + _v
+            else:
+                _active_margin_data = _all_type_data.get(ph_cost_type, proj_info["margin_data"])
+
+            # Cost type breakdown summary (always visible when multiple types exist)
+            if len(_available_types_sorted) > 1 and ph_view == "Production (Ext. Prod.)":
+                with st.expander("📊 All Cost Types — Breakdown Summary", expanded=False):
+                    _month_labels = sorted(
+                        [m["label"] for m in margin_data.get("month_cols", [])],
+                        key=lambda _l: next(
+                            (m["sort_key"] for m in margin_data.get("month_cols", []) if m["label"] == _l),
+                            "9999"
+                        ),
+                    )
+                    _breakdown_rows = []
+                    for _ct in _available_types_sorted:
+                        _td   = _all_type_data.get(_ct, {})
+                        _tot  = sum(_td.get(_l, 0) for _l in _month_labels)
+                        _bl_l = next((k for k in _td if k.startswith("BL (")), None)
+                        _bo_l = next((k for k in _td if k.startswith("BO (")), None)
+                        _breakdown_rows.append({
+                            "Cost Type":        _ct,
+                            "Monthly Total (TL)": human_tl(_tot),
+                            "BL":               human_tl(_td.get(_bl_l, 0)) if _bl_l else "—",
+                            "BO (End Year)":    human_tl(_td.get(_bo_l, 0)) if _bo_l else "—",
+                        })
+                    st.dataframe(
+                        pd.DataFrame(_breakdown_rows),
+                        hide_index=True, use_container_width=True,
+                    )
 
             # ── Build WIP history (needed by both views for combined table) ────
             wip_history = []
@@ -1527,7 +1785,10 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     df_margin          = pd.DataFrame(margin_rows)
                     df_margin["Label"] = df_margin["Production (TL)"].apply(human_tl)
 
-                    _type_suffix = f" [{ph_cost_type}]" if ph_cost_type != "GROSS FEES" else ""
+                    _type_suffix = (
+                        " [All Types]" if ph_cost_type == _ALLTYPE_LABEL
+                        else (f" [{ph_cost_type}]" if ph_cost_type != "GROSS FEES" else "")
+                    )
                     fig_margin = px.line(
                         df_margin, x="Period", y="Production (TL)", markers=True,
                         title=f"{sel_label}{_type_suffix} — Monthly Production (TL)",
@@ -1752,15 +2013,24 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
 
                 # NS tiers
                 st.markdown("**Net Sales**")
-                for _tier, _label in [("Contract", "Contract"), ("WP", "Work Pipeline"), ("WO", "Full Outlook")]:
+                for _tier, _label in [("Contract", "Contract"), ("WP", "Work Pipeline")]:
                     _target = _ns[_tier][_t_idx]
                     _ytd    = _ns[_tier][_y_idx]
                     _pct    = _ytd / _target if _target > 0 else 0
                     _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
                     _tc1.markdown(f"**{_label}**")
                     _tc1.progress(min(1.0, max(0.0, _pct)))
-                    _tc2.metric("YTD (kTL)", human_k(_ytd))
-                    _tc3.metric("Target (kTL)", human_k(_target), delta=f"{_pct:.0%}")
+                    _tc2.metric("YTD (kTL)", fmt_ktl(_ytd))
+                    _tc3.metric("Target (kTL)", fmt_ktl(_target), delta=f"{_pct:.0%}")
+                # Full Outlook = Contract + WP + WO
+                _ytd_fo    = sum(_ns[k][_y_idx] for k in ["Contract", "WP", "WO"])
+                _target_fo = sum(_ns[k][_t_idx] for k in ["Contract", "WP", "WO"])
+                _pct_fo    = _ytd_fo / _target_fo if _target_fo > 0 else 0
+                _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
+                _tc1.markdown("**Full Outlook**")
+                _tc1.progress(min(1.0, max(0.0, _pct_fo)))
+                _tc2.metric("YTD (kTL)", fmt_ktl(_ytd_fo))
+                _tc3.metric("Target (kTL)", fmt_ktl(_target_fo), delta=f"{_pct_fo:.0%}")
 
                 st.markdown("---")
 
@@ -1780,8 +2050,24 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                         _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
                         _tc1.markdown(f"**{_label}**")
                         _tc1.progress(min(1.0, max(0.0, _pct)))
-                        _tc2.metric("YTD (kTL)", human_k(_ytd))
-                        _tc3.metric("Target (kTL)", human_k(_target), delta=f"{_pct:.0%}")
+                        _tc2.metric("YTD (kTL)", fmt_ktl(_ytd))
+                        _tc3.metric("Target (kTL)", fmt_ktl(_target), delta=f"{_pct:.0%}")
+
+                    # ── EBIT % / Net Fees % margin rates ──────────────────────
+                    _epct = _d_latest.get("ebit_pct")
+                    if _epct:
+                        _ep_idx = _cat_index(_epct["cats"], _ytd_abbr)
+                        if _ep_idx != -1:
+                            st.markdown("---")
+                            st.markdown("**Margin Rates — current period**")
+                            _mr1, _mr2, _mr3 = st.columns(3)
+                            _v_act  = _epct["EBIT_Pct"][_ep_idx]
+                            _v_bud  = _epct["EBIT_Pct_Budget"][_ep_idx]
+                            _v_nf   = _epct["NetFees_Pct"][_ep_idx]
+                            _mr1.metric("EBIT % (Actual)",  f"{_v_act*100:.1f}%",
+                                        delta=f"{(_v_act-_v_bud)*100:.1f}pp vs Budget")
+                            _mr2.metric("EBIT % (Budget)",  f"{_v_bud*100:.1f}%")
+                            _mr3.metric("Net Fees %",        f"{_v_nf*100:.1f}%")
             else:
                 st.info("Could not locate the 2026 Target column in the NS data.")
         else:
@@ -1797,6 +2083,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             )
             _abbr_l = _sm_latest.split()[0][:3]
             _pipe_rows = []
+            _TARGET_IDX = 1  # MON_BU_Base=2 → [0]=2025, [1]=2026 Target, [2]=Jan
             for _bu in ["ENG", "MC", "T&SI", "NUC"]:
                 _bd  = _d_latest["bu_ns"][_bu]
                 _mi  = _cat_index(_bd["cats"], _abbr_l)
@@ -1806,27 +2093,52 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _off = _bd["Offer"][_mi] if _mi < len(_bd["Offer"]) else 0
                 _opp = _bd["Opp"][_mi]   if _mi < len(_bd["Opp"])   else 0
                 _tot = _ord + _off + _opp
+                # 2026 Target from index 1 of bu_ns cats
+                _tgt_ord = _bd["Order"][_TARGET_IDX] if _TARGET_IDX < len(_bd["Order"]) else 0
+                _tgt_off = _bd["Offer"][_TARGET_IDX] if _TARGET_IDX < len(_bd["Offer"]) else 0
+                _tgt_opp = _bd["Opp"][_TARGET_IDX]   if _TARGET_IDX < len(_bd["Opp"])   else 0
+                _target  = _tgt_ord + _tgt_off + _tgt_opp
                 _pipe_rows.append({
                     "BU":           _bu,
                     "Order":        _ord,
                     "Offer":        _off,
                     "Opp":          _opp,
                     "Total":        _tot,
+                    "Target":       _target,
+                    "YTD vs Tgt%":  round(_tot / _target * 100, 1) if _target > 0 else 0,
                     "Order%":       round(_ord / _tot * 100, 1) if _tot > 0 else 0,
                     "Offer Rate%":  round((_ord + _off) / _tot * 100, 1) if _tot > 0 else 0,
                 })
 
             if _pipe_rows:
-                _df_pipe  = pd.DataFrame(_pipe_rows)
-                _df_melt  = _df_pipe.melt(id_vars=["BU"], value_vars=["Order", "Offer", "Opp"],
-                                           var_name="Stage", value_name="Value (kTL)")
-                _tier_colors = {"Order": "#0EA5E9", "Offer": "#93C5FD", "Opp": "#CBD5E1"}
+                _df_pipe = pd.DataFrame(_pipe_rows)
+                _df_melt = _df_pipe.melt(
+                    id_vars=["BU"], value_vars=["Order", "Offer", "Opp"],
+                    var_name="Stage", value_name="Value (kTL)",
+                )
+                # BU-specific tier colors using bu_tier_colors()
+                _bu_stage_cmap = {}
+                for _buc in ["ENG", "MC", "T&SI", "NUC"]:
+                    _tc = bu_tier_colors(_buc)
+                    _bu_stage_cmap[f"{_buc} Order"] = _tc[0]
+                    _bu_stage_cmap[f"{_buc} Offer"] = _tc[1]
+                    _bu_stage_cmap[f"{_buc} Opp"]   = _tc[2]
+                _df_melt["BU_Stage"] = _df_melt["BU"] + " " + _df_melt["Stage"]
+                # Abbreviated labels
+                _pipe_seg_max = _df_melt["Value (kTL)"].abs().max() or 1
+                _df_melt["Label"] = _df_melt["Value (kTL)"].apply(
+                    lambda v: human_k(v) if abs(v) / _pipe_seg_max >= 0.03 else ""
+                )
                 _fig_pipe = px.bar(
-                    _df_melt, x="BU", y="Value (kTL)", color="Stage",
+                    _df_melt, x="BU", y="Value (kTL)", color="BU_Stage",
                     barmode="stack",
                     title=f"Pipeline Stages by BU — {_sm_latest}",
-                    color_discrete_map=_tier_colors,
-                    category_orders={"Stage": ["Order", "Offer", "Opp"]},
+                    color_discrete_map=_bu_stage_cmap,
+                    text="Label",
+                    category_orders={"BU_Stage": [
+                        f"{b} {s}" for b in ["ENG", "MC", "T&SI", "NUC"]
+                        for s in ["Order", "Offer", "Opp"]
+                    ]},
                 )
                 _fig_pipe.update_layout(
                     plot_bgcolor="white",
@@ -1835,25 +2147,31 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     legend_title_text="",
                     margin=dict(t=80, b=20),
                 )
-                _fig_pipe.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
+                _fig_pipe.update_traces(
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    textfont=dict(size=11, color="white"),
+                    cliponaxis=False,
+                )
                 st.plotly_chart(_fig_pipe, use_container_width=True, key="sc_pipeline")
 
-                st.markdown("**Conversion Rates**")
+                st.markdown("**Conversion Rates vs 2026 Target**")
                 _cr_cols = st.columns(len(_pipe_rows))
                 for _ci, _row in enumerate(_pipe_rows):
                     _bu_col = _cr_cols[_ci]
                     _bu_col.markdown(f"**{_row['BU']}**")
-                    _bu_col.metric("Total Pipeline", human_k(_row["Total"]))
-                    _bu_col.metric("Order (converted)", f"{_row['Order%']}%")
-                    _bu_col.metric("Offer + Order", f"{_row['Offer Rate%']}%")
+                    _bu_col.metric("YTD Pipeline (kTL)", fmt_ktl(_row["Total"]))
+                    _bu_col.metric("2026 Target (kTL)",  fmt_ktl(_row["Target"]))
+                    _bu_col.metric("YTD vs Target",      f"{_row['YTD vs Tgt%']}%")
+                    _bu_col.metric("Order (secured)",    f"{_row['Order%']}%")
+                    _bu_col.metric("Order + Offer",      f"{_row['Offer Rate%']}%")
 
                 _df_pipe_disp = _df_pipe.copy()
-                _df_pipe_disp["Total"] = _df_pipe_disp["Total"].apply(human_k)
-                _df_pipe_disp["Order"] = _df_pipe_disp["Order"].apply(human_k)
-                _df_pipe_disp["Offer"] = _df_pipe_disp["Offer"].apply(human_k)
-                _df_pipe_disp["Opp"]   = _df_pipe_disp["Opp"].apply(human_k)
+                for _fc in ["Total", "Target", "Order", "Offer", "Opp"]:
+                    _df_pipe_disp[_fc] = _df_pipe_disp[_fc].apply(fmt_ktl)
                 st.dataframe(
-                    _df_pipe_disp[["BU", "Order", "Offer", "Opp", "Total", "Order%", "Offer Rate%"]],
+                    _df_pipe_disp[["BU", "Order", "Offer", "Opp", "Total", "Target",
+                                   "YTD vs Tgt%", "Order%", "Offer Rate%"]],
                     hide_index=True, use_container_width=True,
                 )
         else:

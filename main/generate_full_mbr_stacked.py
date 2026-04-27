@@ -1,18 +1,16 @@
 """
 generate_full_mbr_stacked.py
 ============================
-STACKED-BAR variant of the MRC MBR generator.
+MRC Monthly Business Review — stacked-bar chart generator.
 
-Key differences from generate_full_mbr.py:
   • All bar charts are STACKED (not grouped).
   • NS / OI charts use true component stacking (ENG+MC+T&SI+NUC, etc.)
   • NS confidence-tier charts (Contract / WP / WO) stack INCREMENTAL deltas
     so each band shows the *extra* value that tier adds over the one below.
-  • EBIT charts keep a clean grouped layout because confidence tiers are
-    overlapping totals, not additive components; however value labels are
-    added above each bar.
-  • All labels use human-readable thousands formatting  (e.g. "103,695",
-    "1.2 M", "–45,000").  Segments shorter than 3 % of the tallest bar are
+  • EBIT charts use a grouped layout (Contract / Contract+WP / Contract+WP+WO
+    are overlapping totals, not additive) with value labels above each bar.
+  • All labels use human-readable thousands formatting (e.g. "103,695",
+    "1.2 M", "–45,000"). Segments shorter than 3% of the tallest bar are
     left unlabelled to avoid clutter.
 """
 
@@ -387,7 +385,7 @@ def save_stacked_chart(
                     human_k(pv),
                     ha="center",
                     va="center",
-                    fontsize=7.5,
+                    fontsize=8.5,
                     fontweight="bold",
                     color=lbl_col,
                     zorder=5,
@@ -406,7 +404,7 @@ def save_stacked_chart(
                     human_k(nv),
                     ha="center",
                     va="center",
-                    fontsize=7.5,
+                    fontsize=8.5,
                     fontweight="bold",
                     color=lbl_col,
                     zorder=5,
@@ -431,7 +429,7 @@ def save_stacked_chart(
                 ha="center",
                 va="bottom" if tot > 0 else "top",
                 rotation=45,
-                fontsize=8.5,
+                fontsize=9.5,
                 fontweight="bold",
                 color=total_lbl_col,
                 zorder=5,
@@ -454,7 +452,7 @@ def save_stacked_chart(
                 ha="center",
                 va="bottom",
                 rotation=45,
-                fontsize=8.5,
+                fontsize=9.5,
                 fontweight="bold",
                 color=eb_color,
                 zorder=5,
@@ -474,9 +472,9 @@ def save_stacked_chart(
         pad=18,
         color=chart_text_col,
     )
-    ax.set_ylabel(ylabel, fontsize=11, color=chart_text_col)
+    ax.set_ylabel(ylabel, fontsize=12, color=chart_text_col)
     ax.set_xticks(x)
-    ax.set_xticklabels(categories, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(categories, rotation=30, ha="right", fontsize=10)
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.{fmt_ax}f}"))
     # Build legend handles: main series + optional extra entries (e.g. ABNS bar)
     legend_handles, legend_labels = ax.get_legend_handles_labels()
@@ -493,7 +491,7 @@ def save_stacked_chart(
         bbox_to_anchor=(0.5, -0.28),
         ncol=min(4, n_legend),
         frameon=False,
-        fontsize=10,
+        fontsize=11,
     )
     ax.axhline(0, color="#CBD5E1", linewidth=0.8)
     ax.spines["top"].set_visible(False)
@@ -607,7 +605,7 @@ def save_grouped_chart(
                     pct_inside,
                     ha="center",
                     va="center",
-                    fontsize=7,
+                    fontsize=8,
                     fontweight="bold",
                     color="#1E3A8A",  # Deep Sapphire Blue for readability
                     zorder=5,
@@ -631,7 +629,7 @@ def save_grouped_chart(
                 ha="center",
                 va=va,
                 rotation=45,
-                fontsize=8,
+                fontsize=9,
                 fontweight="bold",
                 color=lbl_color,
                 zorder=5,
@@ -667,7 +665,7 @@ def save_grouped_chart(
                 ha="center",
                 va="bottom",
                 rotation=45,
-                fontsize=8,
+                fontsize=9,
                 fontweight="bold",
                 color=fallback_lbl_col,
                 zorder=5,
@@ -690,9 +688,9 @@ def save_grouped_chart(
         pad=18,
         color=chart_text_col,
     )
-    ax.set_ylabel(ylabel, fontsize=11, color=chart_text_col)
+    ax.set_ylabel(ylabel, fontsize=12, color=chart_text_col)
     ax.set_xticks(x)
-    ax.set_xticklabels(categories, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(categories, rotation=30, ha="right", fontsize=10)
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.{fmt_ax}f}"))
     ax.axhline(0, color="#CBD5E1", linewidth=0.8)
     ax.legend(
@@ -700,7 +698,7 @@ def save_grouped_chart(
         bbox_to_anchor=(0.5, -0.28),
         ncol=min(4, len(series_dict)),
         frameon=False,
-        fontsize=10,
+        fontsize=11,
     )
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -778,7 +776,7 @@ def save_bu_ebit_chart(
             ax.text(
                 x[xi], inside_y, pct_str,
                 ha="center", va="center",
-                fontsize=8, fontweight="bold",
+                fontsize=9, fontweight="bold",
                 color="white", zorder=5,
             )
 
@@ -793,7 +791,7 @@ def save_bu_ebit_chart(
         name.replace("_", " "), fontsize=15, fontweight="bold",
         pad=18, color=chart_text_col,
     )
-    ax.set_ylabel(ylabel, fontsize=11, color=chart_text_col)
+    ax.set_ylabel(ylabel, fontsize=12, color=chart_text_col)
     ax.set_xticks(x)
     ax.set_xticklabels([])   # table column headers serve as x-axis labels; hide duplicates
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.{fmt_ax}f}"))
@@ -813,7 +811,7 @@ def save_bu_ebit_chart(
         cellLoc="center",
     )
     the_table.auto_set_font_size(False)
-    the_table.set_fontsize(8.5)
+    the_table.set_fontsize(9.5)
     the_table.scale(1.0, 1.45)
     # Style header row and row label
     for (row, col), cell in the_table.get_celld().items():
@@ -868,51 +866,6 @@ def incremental_series(series_dict):
 
 # ──────────────────────────────────────────────────────────────
 # PPTX SLIDE HELPERS  (identical to base script)
-# ──────────────────────────────────────────────────────────────
-# ──────────────────────────────────────────────────────────────
-# TEMPLATE-AWARE SLIDE HELPERS
-# ──────────────────────────────────────────────────────────────
-def duplicate_template_content_slide(prs, template_slide_idx=1):
-    """
-    Duplicate a template slide (e.g., content template) to preserve
-    branding, logos, and decorative elements.
-
-    Args:
-        prs: Presentation object
-        template_slide_idx: Index of template slide to duplicate (default 1 = content slide)
-
-    Returns:
-        New slide (copy of template)
-    """
-    if template_slide_idx >= len(prs.slides):
-        # Fallback: create blank if template not available
-        return prs.slides.add_slide(prs.slide_layouts[6])
-
-    # Get the template slide
-    template_slide = prs.slides[template_slide_idx]
-
-    # Add a new blank slide
-    blank_slide_layout = prs.slide_layouts[6]
-    new_slide = prs.slides.add_slide(blank_slide_layout)
-
-    # Copy background
-    try:
-        new_slide.background.fill.solid()
-        # Copy from template if possible
-        if template_slide.background.fill.type:
-            new_slide.background.fill.fore_color.rgb = (
-                template_slide.background.fill.fore_color.rgb
-            )
-    except:
-        pass
-
-    # Copy all shapes from template
-    for shape in template_slide.shapes:
-        el = shape.element
-        newel = el.__copy__()
-        new_slide.shapes._spTree.insert_element_before(newel, "p:extLst")
-
-    return new_slide
 
 
 def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slide_idx=1):
@@ -934,9 +887,11 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                           Pass the WIP template slide index when creating WIP overflow slides
                           so branding is copied from the clean template, not a populated chart slide.
     """
-    # Content area starts where add_header places elements (Inches(0.45))
-    # Shapes with left >= this are in the main content area and must be filtered.
-    _CONTENT_LEFT = Inches(0.45)
+    # Content area: left edge of main content to just before the right-side decoration.
+    # Shapes at left >= _CONTENT_RIGHT are right-edge branding (e.g. the rounded group
+    # decoration at ~12.88") and must be preserved even though they sit inside the slide.
+    _CONTENT_LEFT  = Inches(0.45)
+    _CONTENT_RIGHT = Inches(12.5)   # right-sidebar branding starts here
     _PLACEHOLDER_TEXTS = {"[CHART TITLE]", "[SUBTITLE]", "[CHART IMAGE]", "[KEY METRICS]"}
     _PICTURE_SHAPE_TYPE = 13  # MSO_SHAPE_TYPE.PICTURE
 
@@ -963,7 +918,7 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                 is_placeholder = False
 
                 shape_left = getattr(shape, "left", 0) or 0
-                in_content_area = shape_left >= _CONTENT_LEFT
+                in_content_area = _CONTENT_LEFT <= shape_left < _CONTENT_RIGHT
 
                 # 1. Known placeholder text markers
                 if hasattr(shape, "text"):
@@ -978,6 +933,13 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
                 # 3. Picture shapes in the content area have embedded relationship IDs
                 #    that do not transfer correctly and cause PowerPoint corruption errors.
                 if not is_placeholder and shape.shape_type == _PICTURE_SHAPE_TYPE and in_content_area:
+                    is_placeholder = True
+
+                # 4. Tables, OLE objects, charts and other GraphicFrame shapes in the
+                #    content area — they don't have a simple .text property so the text
+                #    check above misses them, and they must not be copied to new slides.
+                #    Only AUTO_SHAPE (type 1) background fills are allowed through.
+                if not is_placeholder and in_content_area and shape.shape_type not in (1, 17):
                     is_placeholder = True
 
                 if is_placeholder:
@@ -1003,14 +965,12 @@ def add_blank_slide(prs, use_template=True, clean_placeholders=True, source_slid
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = slide_bg_color
-
-    if global_theme == "premium":
-        content_bg = slide.shapes.add_shape(
-            1, Inches(0), Inches(0.9), Inches(13.33), Inches(6.6)
-        )
-        content_bg.fill.solid()
-        content_bg.fill.fore_color.rgb = WHITE
-        content_bg.line.fill.background()
+    content_bg = slide.shapes.add_shape(
+        1, Inches(0), Inches(0.9), Inches(13.33), Inches(6.6)
+    )
+    content_bg.fill.solid()
+    content_bg.fill.fore_color.rgb = WHITE
+    content_bg.line.fill.background()
     return slide
 
 
@@ -1029,13 +989,13 @@ def add_header(slide, title_text, subtitle_text=""):
     p.font.name = FONT_FAMILY
     p.font.bold = True
     p.font.size = Pt(26)
-    p.font.color.rgb = DARK if global_theme == "premium" else ACCENT
+    p.font.color.rgb = DARK
 
     div = slide.shapes.add_shape(
         1, Inches(0.45), Inches(0.92), Inches(12.4), Inches(0.025)
     )
     div.fill.solid()
-    div.fill.fore_color.rgb = ACCENT if global_theme == "premium" else GRAY_LT
+    div.fill.fore_color.rgb = ACCENT
     div.line.fill.background()
 
     if subtitle_text:
@@ -1120,14 +1080,14 @@ def add_second_callout_box(
     Format per row: "▸ ProjectName (truncated)  —  1,234 kTL"
     Auto-scales font so the box never exceeds slide bottom (7.40").
     """
-    _nuc_rgb = RGBColor(1, 107, 97)
+    _nuc_hex = config.get("BU_Colors", {}).get("NUC", "#016B61").lstrip("#")
+    _nuc_rgb = RGBColor(int(_nuc_hex[0:2], 16), int(_nuc_hex[2:4], 16), int(_nuc_hex[4:6], 16))
     _border = border_color if border_color else _nuc_rgb
 
     MAX_BOT = Inches(7.40)
     available = MAX_BOT - top
-    # 1 header line + N project lines, each 0.22" tall
     n_proj = len(lines)
-    header_h = Inches(0.28)
+    header_h = Inches(0.28) if title else Inches(0.0)
     per_line_h = Inches(0.22)
     needed = header_h + per_line_h * n_proj + Inches(0.10)
 
@@ -1159,17 +1119,20 @@ def add_second_callout_box(
     tf = tb.text_frame
     tf.word_wrap = False  # prevent wrapping — truncation handles length
 
-    # Header row
-    p_hdr = tf.paragraphs[0]
-    p_hdr.text = title
-    p_hdr.font.name = FONT_FAMILY
-    p_hdr.font.bold = True
-    p_hdr.font.size = Pt(font_pt + 1.0)
-    p_hdr.font.color.rgb = _border
-    p_hdr.space_after = Pt(2)
+    # Header row (omitted when title is empty — e.g. continuation box)
+    if title:
+        p_hdr = tf.paragraphs[0]
+        p_hdr.text = title
+        p_hdr.font.name = FONT_FAMILY
+        p_hdr.font.bold = True
+        p_hdr.font.size = Pt(font_pt + 1.0)
+        p_hdr.font.color.rgb = _border
+        p_hdr.space_after = Pt(2)
 
     # One project per line: "▸ Name — value"
+    # When no title, reuse the first (empty) paragraph for the first project to avoid a blank line
     max_name_chars = max(18, int(width / Inches(0.065)) - 12)
+    _use_first_para = not title
     for _lbl, _val_str in lines:
         # _lbl is "#N", _val_str is "Name: value" — split on last ": " to get name+val
         if ": " in _val_str:
@@ -1179,7 +1142,11 @@ def add_second_callout_box(
         proj_short = proj_name[:max_name_chars] + "…" if len(proj_name) > max_name_chars else proj_name
         row_text = f"▸ {proj_short}  —  {val_part}" if val_part else f"▸ {proj_short}"
 
-        p = tf.add_paragraph()
+        if _use_first_para:
+            p = tf.paragraphs[0]
+            _use_first_para = False
+        else:
+            p = tf.add_paragraph()
         p.text = row_text
         p.font.name = FONT_FAMILY
         p.font.size = Pt(font_pt)
@@ -1187,9 +1154,8 @@ def add_second_callout_box(
         p.space_after = Pt(0)
 
 
-_tbl_cfg = config.get(f"THEMES.{global_theme}.Table", {})
-_tbl_header_pt = Pt(_tbl_cfg.get("Header", {}).get("Font_Size", 10))
-_tbl_data_pt = Pt(_tbl_cfg.get("Data_Text", {}).get("Font_Size", 9.5))
+_tbl_header_pt = Pt(10)
+_tbl_data_pt = Pt(9.5)
 
 
 def style_table_header(cell):
@@ -1295,7 +1261,6 @@ def add_oi_table_to_slide(slide, oi_projects, max_rows=15, chart_total=None):
     """
     rows_data = oi_projects
     n_data = len(rows_data)
-    has_others = False
 
     n_rows = 1 + n_data + 1  # header + data + total row
 
@@ -1337,10 +1302,6 @@ def add_oi_table_to_slide(slide, oi_projects, max_rows=15, chart_total=None):
             _set_cell_text(cell, txt, font_size=Pt(10.5), align=aln)
             style_table_data(cell, alt=alt)
         total_val += val
-
-    # Others row removed as requested
-
-    # Unallocated row removed as requested
 
     # Total row
     total_row = n_rows - 1
@@ -1493,7 +1454,7 @@ def export_wip_to_excel(wip_rows, month, year, output_dir, slide_rows=None, nega
                 proj["inv_oc"],
                 proj["prod_oc"],
                 proj["wip_tl"],
-                "",
+                "YES",
             ]
             fill = neg_data_fill_odd if ni % 2 == 1 else None
             for ci, val in enumerate(row_vals, 1):
@@ -1517,8 +1478,8 @@ def export_wip_to_excel(wip_rows, month, year, output_dir, slide_rows=None, nega
             "NEGATIVE SUBTOTAL",
             "",
             "",
-            sum(r["inv_oc"] for r in negative_rows),
-            sum(r["prod_oc"] for r in negative_rows),
+            "",
+            "",
             sum(r["wip_tl"] for r in negative_rows),
             "",
         ]
@@ -1542,8 +1503,8 @@ def export_wip_to_excel(wip_rows, month, year, output_dir, slide_rows=None, nega
             "GRAND TOTAL (incl. Negatives)",
             "",
             "",
-            sum(r["inv_oc"] for r in wip_rows) + sum(r["inv_oc"] for r in negative_rows),
-            sum(r["prod_oc"] for r in wip_rows) + sum(r["prod_oc"] for r in negative_rows),
+            "",
+            "",
             pos_wip_total + neg_wip_total,
             "",
         ]
@@ -1901,8 +1862,6 @@ def add_wip_table_to_slide(slide, wip_projects, slide_num=7):
 
     # Total row — fills only fields present in column list
     total_values = {
-        "inv_oc": human_tl(total_inv),
-        "prod_oc": human_tl(total_prod),
         "wip_tl": human_tl(total_wip),
     }
     tr = n_rows - 1
@@ -1924,11 +1883,11 @@ def add_wip_table_to_slide(slide, wip_projects, slide_num=7):
     print(f"  [Slide 7] WIP table: {n_data} projects, WIP TL = {human_tl(total_wip)}")
 
 
-def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide_num=8):
+def add_wip_negative_table_to_slide(slide, negative_rows, all_positive_wip, slide_num=8):
     """
     WIP Negative Projects table for its own dedicated slide.
     Uses the same column config as the positive WIP table.
-    Appends a NEGATIVE SUBTOTAL row and a GRAND TOTAL (>=1M + Negatives) row.
+    Appends a NEGATIVE SUBTOTAL row and a GRAND TOTAL (all positives + negatives) row.
     Negative WIP TL values are rendered in red.
     """
     from pptx.enum.text import MSO_ANCHOR
@@ -2039,8 +1998,6 @@ def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide
     neg_subtot_ri = n_rows - 2
     neg_subtot_values = {
         "name":    f"NEGATIVE SUBTOTAL  ({n_data} project{'s' if n_data != 1 else ''})",
-        "inv_oc":  human_tl(total_inv),
-        "prod_oc": human_tl(total_prod),
         "wip_tl":  human_tl(total_wip),
     }
     for ci, col in enumerate(_wip_cols):
@@ -2057,11 +2014,11 @@ def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide
                 run.font.bold = True
                 run.font.size = _fs_total
 
-    # ── Grand total row (>=1M positives + negatives) ──
-    grand_total_wip = slide_total_wip + total_wip
+    # ── Grand total row (ALL positives + negatives) ──
+    grand_total_wip = all_positive_wip + total_wip
     grand_tot_ri = n_rows - 1
     grand_tot_values = {
-        "name":   f"GRAND TOTAL  (\u22651M on slides + Negatives)",
+        "name":   "GRAND TOTAL  (All WIP incl. Negatives)",
         "wip_tl": human_tl(grand_total_wip),
     }
     _grand_dark = RGBColor(0x1E, 0x3A, 0x8A)  # Deep Sapphire
@@ -2089,9 +2046,22 @@ def add_wip_negative_table_to_slide(slide, negative_rows, slide_total_wip, slide
 # MAIN MBR FUNCTION
 # ──────────────────────────────────────────────────────────────
 def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
-    # ── Derive month / year from filename ─────────────────────
+    # ── Get output configuration from config ──────────────────────
+    output_prefix = config.get("APP.Output.Filename_Prefix", "MRC_Business_Review_")
+    save_in_excel_folder = config.get("APP.Output.Save_In_Excel_Folder", True)
+    create_temps_folder = config.get("APP.Output.Create_Temps_Folder", True)
+    temps_folder_name = config.get("APP.Temps.Folder_Name", "temps")
+    
+    # ── Derive month / year / date_prefix from filename ──────────
     month = "January"
     year = "2026"
+    date_prefix = "260131"  # default
+    
+    # Extract date prefix from filename (e.g., "260228" from "260228_Project_Budget_Analysis_February_v1.2.xlsx")
+    date_match = re.search(r'^(\d{6})', os.path.basename(excel_file))
+    if date_match:
+        date_prefix = date_match.group(1)
+    
     months_list = [
         "January",
         "February",
@@ -2110,15 +2080,29 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
         if m[:3].lower() in os.path.basename(excel_file).lower():
             month = m
             break
-    m_year = re.search(r"^(\d{2})", os.path.basename(excel_file))
-    if m_year:
-        year = "20" + m_year.group(1)
+    
+    year_match = re.search(r'^(\d{2})', os.path.basename(excel_file))
+    if year_match:
+        year = "20" + year_match.group(1)
+    
     if output_ppt is None:
-        output_ppt = f"MRC_MBR_Stacked_{month}_{year}.pptx"
-
+        # Format: 260228_Business_Review_February.pptx (date_prefix from Excel filename, suffix from config)
+        output_ppt = f"{date_prefix}_{output_prefix.strip('_')}_{month}.pptx"
+    
+    # Get Excel file's directory for output
+    excel_dir = os.path.dirname(os.path.abspath(excel_file))
+    
+    # Create temps folder in Excel directory if configured
+    temps_dir = None
+    if create_temps_folder:
+        temps_dir = os.path.join(excel_dir, temps_folder_name)
+        os.makedirs(temps_dir, exist_ok=True)
+        print(f"[Temps] Created folder: {temps_dir}")
+    
     month_idx = months_list.index(month) if month in months_list else 0
 
     print(f"[Stacked] Reading {excel_file} …  ({month} {year})")
+    print(f"[Output] Date prefix: {date_prefix}, Output file: {output_ppt}")
 
     # ── Load sheets ───────────────────────────────────────────
     try:
@@ -2169,10 +2153,10 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     # the 14 OI columns align as [2025, 2026 Target, Jan … Dec].
     cats_oi = cats_ns_ktl[:2] + cats_ns_ktl[3:]
     cats_bu_ns = [
-        clean_label(df.iloc[R.get("Categories_BU_NS", 14), c]) for c in range(C.get("BU_NS_Start", 51), C.get("BU_NS_End", 66))
+        clean_label(df.iloc[R.get("Categories_BU_NS", 14), c]) for c in range(C.get("BU_NS_Start", 52), C.get("BU_NS_End", 66))
     ]
     cats_bu_ebit = [
-        clean_label(df.iloc[R.get("Categories_BU_EBIT", 97), c]) for c in range(C.get("BU_EBIT_Start", 51), C.get("BU_EBIT_End", 66))
+        clean_label(df.iloc[R.get("Categories_BU_EBIT", 97), c]) for c in range(C.get("BU_EBIT_Start", 52), C.get("BU_EBIT_End", 66))
     ]
 
     s2_contract = rv(R.get("Slide2_Contract", 15), C.get("NS_kTL_Start", 2), C.get("NS_kTL_End", 17))
@@ -2191,37 +2175,37 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     s5_cwp = rv(R.get("Slide5_Contract_WP", 57), C.get("EBIT_kEUR_Start", 1), C.get("EBIT_kEUR_End", 16))
     s5_cwp_wo = rv(R.get("Slide5_Contract_WP_WO", 58), C.get("EBIT_kEUR_Start", 1), C.get("EBIT_kEUR_End", 16))
 
-    # Dynamically find the OI categories row to handle Excel files that have
-    # a different number of rows (e.g. January file has 1 extra row vs February).
-    # The categories row is identified by having a year value (2025) at OI_kTL_Start
-    # and "Jan" at OI_kTL_Start+2.
     _oi_col_start = C.get("OI_kTL_Start", 4)
     _oi_col_end   = C.get("OI_kTL_End", 18)
-    _oi_cats_cfg  = R.get("Categories_OI_kTL", 543)
-    _oi_cats_row  = _oi_cats_cfg  # default
-    for _probe in range(_oi_cats_cfg - 2, _oi_cats_cfg + 5):
-        if 0 <= _probe < len(df_oi):
-            _c4 = str(df_oi.iloc[_probe, _oi_col_start]).strip()
-            _c6 = str(df_oi.iloc[_probe, _oi_col_start + 2]).strip()
-            # Categories row: col4 looks like a year (e.g. "2025"), col6 is "Jan"
-            if _c4.split(".")[0].isdigit() and len(_c4.split(".")[0]) == 4 and "jan" in _c6.lower():
-                _oi_cats_row = _probe
-                break
-    _oi_offset = _oi_cats_row - _oi_cats_cfg  # 0 for most files, ±N if file has extra/fewer rows
-    if _oi_offset != 0:
-        print(f"[OI] Row offset detected: {_oi_offset:+d} (file row count differs from config baseline)")
 
-    def _oi_row(key, default):
-        return [safe_float(df_oi.iloc[R.get(key, default) + _oi_offset, c])
-                for c in range(_oi_col_start, _oi_col_end)]
+    # Locate the BU summary table by finding "Engineering" at the label column (col D = index 3).
+    # Project-level rows carry the BU name at col 4 (OI_kTL_Start); the summary row uses col 3.
+    # Searching from the bottom of the sheet ensures we always get the summary table, not a
+    # project row, and is stable regardless of how many project rows are added each month.
+    _oi_label_col = _oi_col_start - 1
+    _oi_eng_row = None
+    for _r in range(len(df_oi) - 1, -1, -1):
+        if str(df_oi.iloc[_r, _oi_label_col]).strip() == "Engineering":
+            _oi_eng_row = _r
+            break
+    if _oi_eng_row is None:
+        print("[OI] WARNING: 'Engineering' summary row not found — using config default")
+        _oi_eng_row = R.get("Slide6_ENG", 544)
+    else:
+        print(f"[OI] Summary table found: Engineering at pandas row {_oi_eng_row} (Excel row {_oi_eng_row + 1})")
 
-    s6_eng = _oi_row("Slide6_ENG", 544)
-    s6_mc  = _oi_row("Slide6_MC",  545)
-    s6_tsi = _oi_row("Slide6_TSI", 546)
-    s6_nuc = _oi_row("Slide6_NUC", 547)
+    _oi_cats_row = _oi_eng_row - 1  # categories header row (2025, 2026 Target, Jan, …)
+
+    def _oi_row_at(row_idx):
+        return [safe_float(df_oi.iloc[row_idx, c]) for c in range(_oi_col_start, _oi_col_end)]
+
+    s6_eng = _oi_row_at(_oi_eng_row)
+    s6_mc  = _oi_row_at(_oi_eng_row + 1)
+    s6_tsi = _oi_row_at(_oi_eng_row + 2)
+    s6_nuc = _oi_row_at(_oi_eng_row + 3)
 
     def bu_ns_row(xrow):
-        return [safe_float(df.iloc[xrow - 1, c]) for c in range(C.get("BU_NS_Start", 51), C.get("BU_NS_End", 66))]
+        return [safe_float(df.iloc[xrow - 1, c]) for c in range(C.get("BU_NS_Start", 52), C.get("BU_NS_End", 66))]
 
     bu_ns = {
         "ENG": {
@@ -2247,18 +2231,18 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     }
 
     def bu_ebit_row(xrow):
-        return [safe_float(df.iloc[xrow - 1, c]) for c in range(C.get("BU_EBIT_Start", 51), C.get("BU_EBIT_End", 66))]
+        return [safe_float(df.iloc[xrow - 1, c]) for c in range(C.get("BU_EBIT_Start", 52), C.get("BU_EBIT_End", 66))]
 
     bu_ebit = {
-        "ENG": bu_ebit_row(R.get("BU_EBIT_ENG", 102)),
+        "ENG": bu_ebit_row(R.get("BU_EBIT_ENG", 100)),
         "MC": bu_ebit_row(R.get("BU_EBIT_MC", 99)),
-        "T&SI": bu_ebit_row(R.get("BU_EBIT_TSI", 104)),
-        "NUC": bu_ebit_row(R.get("BU_EBIT_NUC", 106)),
+        "T&SI": bu_ebit_row(R.get("BU_EBIT_TSI", 101)),
+        "NUC": bu_ebit_row(R.get("BU_EBIT_NUC", 102)),
     }
 
     # ── Dynamic month offsets ─────────────────────────────────
     MON_NS = O.get("MON_NS_Base", 3) + month_idx
-    MON_EBIT = O.get("MON_EBIT_Base", 4) + month_idx
+    MON_EBIT = O.get("MON_EBIT_Base", 3) + month_idx
     # BU NS/EBIT arrays (col52-65, 14 values): [2025, 2026Target, Jan…Dec] — Jan=index 2
     MON_BU = O.get("MON_BU_Base", 2) + month_idx
     MON_OI = O.get("MON_OI_Base", 2) + month_idx
@@ -2405,34 +2389,26 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
         ebit_dec_keur = _ebit_keur_curr
     ebit_mon_keur = _ebit_keur_curr - _ebit_keur_prev
 
-    # ── Retained for internal EBIT % computation ──────────────────────────
-    gr_total_ktl   = s2_contract[14] + s2_wp[14] + s2_wo[14]
-    ebit_total_ktl = sum(s4_cwp_wo[4:16])
-    ebit_total_pct = ebit_total_ktl / gr_total_ktl if gr_total_ktl else 0
-
-    # ── Order Intake ───────────────────────────────────────────────────────
-    oi_mon_total = s6_eng[MON_OI] + s6_mc[MON_OI] + s6_tsi[MON_OI] + s6_nuc[MON_OI]
-    oi_total = (
-        sum(s6_eng[2:14]) + sum(s6_mc[2:14]) + sum(s6_tsi[2:14]) + sum(s6_nuc[2:14])
+    # ── Order Intake (Cumulative Data) ─────────────────────────────────────
+    oi_mon_total = (
+        (s6_eng[MON_OI] + s6_mc[MON_OI] + s6_tsi[MON_OI] + s6_nuc[MON_OI]) -
+        (s6_eng[MON_OI - 1] + s6_mc[MON_OI - 1] + s6_tsi[MON_OI - 1] + s6_nuc[MON_OI - 1] if month_idx > 0 else 0)
     )
-    # OI data is non-cumulative (each cell = that month's value), so sum manually for YTD
-    oi_ytd = (
-        sum(s6_eng[2:MON_OI + 1]) + sum(s6_mc[2:MON_OI + 1])
-        + sum(s6_tsi[2:MON_OI + 1]) + sum(s6_nuc[2:MON_OI + 1])
-    )
+    oi_total = s6_eng[13] + s6_mc[13] + s6_tsi[13] + s6_nuc[13]
+    oi_ytd = s6_eng[MON_OI] + s6_mc[MON_OI] + s6_tsi[MON_OI] + s6_nuc[MON_OI]
 
-    # ── OI callout: dynamic month-column scan on row 540 (pandas 539) ────────
-    # 'Order Intake'!$D$544:$R$548 — month headers at row 540, cols G(6) to R(18)
-    _oi_hdr_row = R.get("OI_Month_Header_Row", 539)  # Excel row 540 = pandas 539
-    _oi_mon_col = _find_oi_month_col(_oi_hdr_row, 6, 18, month)
+    # ── OI callout: month-column scan using the dynamically-found categories row ──
+    _oi_mon_col = _find_oi_month_col(_oi_cats_row, _oi_col_start, _oi_col_end, month)
     if _oi_mon_col is not None and df_oi is not None:
-        oi_callout_mon = sum(
-            safe_float(df_oi.iloc[R.get(k, d) + _oi_offset, _oi_mon_col])
-            for k, d in [
-                ("Slide6_ENG", 544), ("Slide6_MC", 545),
-                ("Slide6_TSI", 546), ("Slide6_NUC", 547),
-            ]
+        _oi_curr = sum(
+            safe_float(df_oi.iloc[_oi_eng_row + i, _oi_mon_col])
+            for i in range(4)  # Engineering, MC, T&SI, Nuclear
         )
+        _oi_prev = sum(
+            safe_float(df_oi.iloc[_oi_eng_row + i, _oi_mon_col - 1])
+            for i in range(4)
+        ) if month_idx > 0 else 0
+        oi_callout_mon = _oi_curr - _oi_prev
     else:
         oi_callout_mon = oi_mon_total  # fallback
 
@@ -2492,17 +2468,9 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     oi_abns_projects.sort(key=lambda x: x[2], reverse=True)
     oi_mon_abns = sum(x[2] for x in oi_abns_projects)
 
-    # Show ALL ABNS projects (no top-N limit)
-    oi_abns_all = oi_abns_projects
-
-    # BU NS arrays: [0]=2025, [1]=2026Target, [2]=Jan, …, [13]=Dec (14 values, col52-65)
-    # Use December cumulative (index 13) as the FY 2026 total.
-    bu_annual_ns = {
-        bu: bu_ns[bu]["Order"][13] + bu_ns[bu]["Offer"][13]
-        for bu in bu_ns
-    }
-    # BU EBIT arrays (col52-65, 14 values): [0]=2025, [1]=2026Target, [2]=Jan, …, [13]=Dec
-    bu_mon_ebit = {bu: bu_ebit[bu][MON_BU] for bu in bu_ebit}
+    # Respect config limit (0 = show all)
+    _abns_limit = config.get("APP.Formatting.ABNS_Max_Projects", 0)
+    oi_abns_all = oi_abns_projects[:_abns_limit] if _abns_limit > 0 else oi_abns_projects
 
     # ── EBIT Percentages Extraction ───────────────────────────
     ebit_p_ktl  = rv(R.get("EBIT_P_kTL", 42), C.get("EBIT_kTL_Start", 1), C.get("EBIT_kTL_End", 16))
@@ -2512,7 +2480,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     oi_projects = []
     if df_oi is not None:
         oi_col = O.get("OI_Col_Base", 6) + month_idx
-        oi_data_end = R.get("Categories_OI_kTL", 543)
+        oi_data_end = _oi_cats_row  # stop just before the BU summary header row
 
         for idx in range(2, oi_data_end):
             row = df_oi.iloc[idx]
@@ -2611,6 +2579,9 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
 
     # ── Generate charts ───────────────────────────────────────
     chart_paths = []
+    
+    # Use temps directory if configured, otherwise fall back to SCRIPT_DIR
+    chart_base_dir = temps_dir if temps_dir else SCRIPT_DIR
 
     def stacked_chart(
         name,
@@ -2624,7 +2595,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
         n_yoy=2,
         extra_legend=None,
     ):
-        path = os.path.join(SCRIPT_DIR, f"temp_stk_{name}.png")
+        path = os.path.join(chart_base_dir, f"temp_stk_{name}.png")
         save_stacked_chart(
             name,
             categories,
@@ -2644,7 +2615,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     def grouped_chart(
         name, categories, series_dict, ylabel="kTL", percents=None, color_palette=None
     ):
-        path = os.path.join(SCRIPT_DIR, f"temp_grp_{name}.png")
+        path = os.path.join(chart_base_dir, f"temp_grp_{name}.png")
         save_grouped_chart(
             name,
             categories,
@@ -2658,7 +2629,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
         return path
 
     def bu_ebit_chart(name, categories, values, percents, ylabel="kTL", bu_color="#0EA5E9", bu_label="BU"):
-        path = os.path.join(SCRIPT_DIR, f"temp_buebit_{name}.png")
+        path = os.path.join(chart_base_dir, f"temp_buebit_{name}.png")
         save_bu_ebit_chart(name, categories, values, percents, path, ylabel, bu_color, bu_label)
         chart_paths.append(path)
         return path
@@ -2779,7 +2750,13 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
         # EBIT Chart: use save_bu_ebit_chart — matches reference PPTX style
         # (green 2025 bar, dark-blue 2026 Target bar, BU-colour monthly bars,
         #  % labels inside bars, data table at the bottom)
-        bu_pct_row = {"ENG": 108, "MC": 107, "T&SI": 109, "NUC": 110}.get(bu, 100)
+        _bu_pct_rows = {
+            "ENG":  R.get("BU_EBIT_P_ENG", 108),
+            "MC":   R.get("BU_EBIT_P_MC",  107),
+            "T&SI": R.get("BU_EBIT_P_TSI", 109),
+            "NUC":  R.get("BU_EBIT_P_NUC", 110),
+        }
+        bu_pct_row = _bu_pct_rows.get(bu, 100)
         pcts = bu_ebit_row(bu_pct_row)
 
         p_eb = bu_ebit_chart(
@@ -2899,11 +2876,11 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
 
                 callout_lines = [
                     (f"{month} NS", human_k(gr_mon_ktl)),
-                    ("Dec NS", human_k(gr_dec_ktl)),
+                    (f"End of {year} NS", human_k(gr_dec_ktl)),
                 ]
                 # ABNS total in red
                 if oi_mon_abns > 0:
-                    callout_lines.append(("FY ABNS", human_k(oi_mon_abns), _nuc_color))
+                    callout_lines.append(("ABNS", human_k(oi_mon_abns), _nuc_color))
 
                 # Main callout box (right side)
                 add_callout_box(
@@ -2912,20 +2889,43 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
                 )
 
                 # Second callout (left side) — ALL ABNS projects, green border
+                # Split into two side-by-side boxes when project count exceeds threshold
                 if oi_abns_all:
-                    add_second_callout_box(
-                        prs.slides[1],
-                        abns_lines,
-                        left=Inches(0.45),
-                        top=Inches(6.15),
-                        width=Inches(4.0),
-                    )
+                    _abns_split_at = config.get("APP.Formatting.ABNS_Split_At", 5)
+                    _abns_top = Inches(6.15)
+                    if len(abns_lines) > _abns_split_at:
+                        _box_w = Inches(4.5)
+                        _gap   = Inches(0.20)
+                        _split = (len(abns_lines) + 1) // 2  # first box gets the larger half
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines[:_split],
+                            left=Inches(0.45),
+                            top=_abns_top,
+                            width=_box_w,
+                        )
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines[_split:],
+                            left=Inches(0.45) + _box_w + _gap,
+                            top=_abns_top,
+                            width=_box_w,
+                            title="",  # no duplicate header on second box
+                        )
+                    else:
+                        add_second_callout_box(
+                            prs.slides[1],
+                            abns_lines,
+                            left=Inches(0.45),
+                            top=_abns_top,
+                            width=Inches(4.0),
+                        )
             elif slide_idx == 2:  # GR kEUR
                 add_callout_box(
                     prs.slides[2],
                     [
                         (f"{month} NS", human_k(gr_mon_keur)),
-                        ("Dec NS", human_k(gr_dec_keur)),
+                        (f"End of {year} NS", human_k(gr_dec_keur)),
                     ],
                     left=Inches(10.5),
                 )
@@ -2934,7 +2934,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
                     prs.slides[3],
                     [
                         (f"{month} EBIT", human_k(ebit_mon_ktl)),
-                        ("Dec EBIT", human_k(ebit_dec_ktl)),
+                        (f"End of {year} EBIT", human_k(ebit_dec_ktl)),
                     ],
                 )
             elif slide_idx == 4:  # EBIT kEUR
@@ -2942,16 +2942,16 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
                     prs.slides[4],
                     [
                         (f"{month} EBIT", human_k(ebit_mon_keur)),
-                        ("Dec EBIT", human_k(ebit_dec_keur)),
+                        (f"End of {year} EBIT", human_k(ebit_dec_keur)),
                     ],
                 )
             elif slide_idx == 5:  # Order Intake
                 callout_lines = [
                     (f"{month} Signed", human_k(oi_callout_mon)),
-                    ("Dec OI", human_k(oi_total)),
+                    (f"End of {year} OI", human_k(oi_total)),
                 ]
                 if oi_mon_abns > 0:
-                    callout_lines.append(("FY ABNS", human_k(oi_mon_abns)))
+                    callout_lines.append(("ABNS", human_k(oi_mon_abns)))
 
                 add_callout_box(
                     prs.slides[5],
@@ -2976,6 +2976,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     from pptx.oxml.ns import qn as _qn
 
     extra_wip_slides = 0
+    _neg_slide_blank = None  # pre-created before slide 7 is populated (set inside if block below)
 
     if wip_slide_rows:
         # ── Step 1: Calculate chunks ──────────────────────────────────
@@ -2989,9 +2990,12 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             f"{len(wip_chunks)} slide(s) ({MAX_ROWS_PER_SLIDE} rows/slide max)"
         )
 
-        # ── Step 2 & 3: Pre-create overflow slides from clean WIP template ──
-        # Copy from prs.slides[7] NOW, before it gets populated with content.
-        # source_slide_idx=7 ensures we get the clean template sidebar branding.
+        # ── Step 2 & 3: Pre-create overflow + negative slides from clean WIP template ──
+        # ALL blank slides that need WIP branding must be created NOW, before slide 7
+        # is populated with content. After population, add_blank_slide would copy the
+        # table into every new slide created from source_slide_idx=7.
+        _neg_slide_blank = add_blank_slide(prs, source_slide_idx=7) if wip_negative_rows else None
+
         overflow_slides = []
         for chunk_idx in range(1, len(wip_chunks)):
             new_slide = add_blank_slide(prs, source_slide_idx=7)
@@ -3029,7 +3033,7 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
 
     if wip_excel_rows:
         wip_xlsx_path = export_wip_to_excel(
-            wip_excel_rows, month, year, SCRIPT_DIR,
+            wip_excel_rows, month, year, excel_dir,
             slide_rows=wip_slide_rows, negative_rows=wip_negative_rows
         )
 
@@ -3046,7 +3050,9 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
     # ── Negative WIP slide (dedicated slide after all positive WIP slides) ────────
     _last_pos_wip_idx = 7 + extra_wip_slides  # last positive WIP slide index (before negative increment)
     if wip_negative_rows:
-        _neg_slide = add_blank_slide(prs, source_slide_idx=7)
+        # Use the blank pre-created before slide 7 was populated; fall back to creating
+        # a fresh one (the filter fix in add_blank_slide makes this safe either way).
+        _neg_slide = _neg_slide_blank if _neg_slide_blank is not None else add_blank_slide(prs, source_slide_idx=1)
 
         # Reorder: insert immediately after the last positive WIP slide
         _sldIdLst2 = prs.part._element.find(_qn("p:sldIdLst"))
@@ -3064,11 +3070,11 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             "WIP (Work In Progress) — Negative Projects",
             f"{month} {year}",
         )
-        _slide_total_wip = sum(r["wip_tl"] for r in wip_slide_rows)
+        _all_positive_wip = sum(r["wip_tl"] for r in wip_excel_rows)
         add_wip_negative_table_to_slide(
             _neg_slide,
             wip_negative_rows,
-            _slide_total_wip,
+            _all_positive_wip,
             slide_num=7 + extra_wip_slides,
         )
         print(f"  [WIP] Created Negative Projects slide at position {7 + extra_wip_slides}")
@@ -3130,7 +3136,14 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             # EBIT slides (1, 3, 5, 7): no callout box
 
     # ── Save PPTX ──────────────────────────────────────────────────────
-    output_ppt = os.path.join(SCRIPT_DIR, f"MRC_MBR_Stacked_{month}_{year}.pptx")
+    # Save in the same directory as the source Excel file if configured
+    if save_in_excel_folder:
+        output_ppt = os.path.join(excel_dir, output_ppt)
+    else:
+        output_ppt = os.path.join(SCRIPT_DIR, output_ppt)
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_ppt), exist_ok=True)
     prs.save(output_ppt)
 
     if wip_ole_params:
@@ -3182,12 +3195,24 @@ def create_17_slide_mbr_stacked(excel_file, output_ppt=None):
             )
 
     print(f"\n[DONE] Saved:  {output_ppt}  ({len(prs.slides)} slides)")
+    
+    # Clean up temp chart files if configured
+    clean_temps = config.get("APP.Temps.Clean_After_Generate", True)
     for p in chart_paths:
         if os.path.exists(p):
             try:
                 os.remove(p)
             except Exception:
                 pass
+    
+    # Optionally remove the temps folder if it's now empty
+    if clean_temps and temps_dir and os.path.exists(temps_dir):
+        try:
+            if not os.listdir(temps_dir):
+                os.rmdir(temps_dir)
+                print(f"[Temps] Cleaned up empty folder: {temps_dir}")
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -3201,81 +3226,104 @@ _MONTHS_FULL = [
 
 def _find_best_excel(month_filter=None):
     """
-    Scan SCRIPT_DIR for Budget Analysis Excel files.
+    Scan SCRIPT_DIR and its YYMMDD_MonthName sub-folders for Budget Analysis
+    Excel files (e.g. 260228_February/260228_Project_Budget_Analysis_February_v1.2.xlsx).
     For each month found, returns the file with the highest version number.
     If month_filter is given (e.g. "January"), returns only that month's best file.
     Returns the chosen file path or None.
     """
-    candidates = [
-        f for f in os.listdir(SCRIPT_DIR)
-        if f.endswith(".xlsx") and not f.startswith("~")
-        and ("Budget_Analysis" in f or "budget_analysis" in f.lower())
-    ]
+    # Collect candidates: root + any YYMMDD_* sub-folders
+    candidate_paths = []
+    for entry in os.listdir(SCRIPT_DIR):
+        full = os.path.join(SCRIPT_DIR, entry)
+        if os.path.isdir(full) and re.match(r'^\d{6}_', entry):
+            # Month sub-folder (e.g. 260228_February)
+            for f in os.listdir(full):
+                if f.endswith(".xlsx") and not f.startswith("~") and (
+                    "Budget_Analysis" in f or "budget_analysis" in f.lower()
+                ):
+                    candidate_paths.append(os.path.join(full, f))
+        elif os.path.isfile(full) and entry.endswith(".xlsx") and not entry.startswith("~") and (
+            "Budget_Analysis" in entry or "budget_analysis" in entry.lower()
+        ):
+            candidate_paths.append(full)
 
-    # Parse (month, major, minor) from each candidate
-    def _parse(fname):
+    # Parse sort key (date_prefix, major, minor) from each candidate.
+    # date_prefix (YYMMDD as int) is the primary key so a newer year always
+    # beats an older one regardless of version number — e.g. 260331_v1.0
+    # correctly beats 220331_v4.2 for the same month.
+    def _parse(fpath):
+        fname = os.path.basename(fpath)
         month = None
         for m in _MONTHS_FULL:
             if m.lower() in fname.lower():
                 month = m
                 break
+        date_match = re.match(r'^(\d{6})', fname)
+        date_pfx = int(date_match.group(1)) if date_match else 0
         ver = re.search(r'[vV](\d+)[._]?(\d*)', fname)
         major = int(ver.group(1)) if ver else 0
         minor = int(ver.group(2)) if ver and ver.group(2) else 0
-        return month, (major, minor)
+        return month, (date_pfx, major, minor)
 
-    # Group by month → keep highest version
-    best = {}  # month → (filename, version_tuple)
+    # Group by month → keep highest (date_prefix, major, minor).
+    # On a tie, prefer files without "copy" in the name.
+    def _is_copy(fpath):
+        return "copy" in os.path.basename(fpath).lower()
+
+    best = {}  # month → (filepath, (date_pfx, major, minor))
     no_month = []
-    for f in candidates:
-        month, ver = _parse(f)
+    for fpath in candidate_paths:
+        month, sort_key = _parse(fpath)
         if month:
-            if month not in best or ver > best[month][1]:
-                best[month] = (f, ver)
+            if month not in best:
+                best[month] = (fpath, sort_key)
+            elif sort_key > best[month][1]:
+                best[month] = (fpath, sort_key)
+            elif sort_key == best[month][1] and _is_copy(best[month][0]) and not _is_copy(fpath):
+                best[month] = (fpath, sort_key)  # prefer non-copy on tie
         else:
-            no_month.append(f)
+            no_month.append(fpath)
+
+    def _ver_str(sort_key):
+        _, maj, mn = sort_key
+        return f"v{maj}.{mn}"
 
     if month_filter:
         m_cap = month_filter.strip().capitalize()
         # Try full name match first
         if m_cap in best:
-            chosen = os.path.join(SCRIPT_DIR, best[m_cap][0])
-            print(f"[Auto-detect] Month='{m_cap}' -> {best[m_cap][0]} (v{best[m_cap][1][0]}.{best[m_cap][1][1]})")
+            chosen, sk = best[m_cap]
+            print(f"[Auto-detect] Month='{m_cap}' -> {os.path.basename(chosen)} ({_ver_str(sk)})")
             return chosen
         # Try abbreviation (e.g. "jan" → "January")
         for m in _MONTHS_FULL:
             if m.lower().startswith(m_cap.lower()):
                 if m in best:
-                    chosen = os.path.join(SCRIPT_DIR, best[m][0])
-                    print(f"[Auto-detect] Month='{m}' -> {best[m][0]} (v{best[m][1][0]}.{best[m][1][1]})")
+                    chosen, sk = best[m]
+                    print(f"[Auto-detect] Month='{m}' -> {os.path.basename(chosen)} ({_ver_str(sk)})")
                     return chosen
         print(f"[Auto-detect] No Budget Analysis file found for month '{month_filter}'")
         print(f"  Available months: {sorted(best.keys(), key=lambda x: _MONTHS_FULL.index(x))}")
         return None
 
-    # No month filter: pick the entry with the latest (date_prefix, version)
-    # Use the YYMMDD prefix from the filename so Dec-2025 ranks below Jan-2026, etc.
+    # No month filter: pick the entry with the highest (date_prefix, major, minor)
     if best:
-        def _sort_key(item):
-            _, (fname, (maj, mn)) = item
-            date_match = re.match(r'^(\d{6})', fname)
-            date_prefix = int(date_match.group(1)) if date_match else 0
-            return (date_prefix, maj, mn)
-        latest_month, (latest_file, latest_ver) = max(best.items(), key=_sort_key)
-        chosen = os.path.join(SCRIPT_DIR, latest_file)
-        print(f"[Auto-detect] Latest: {latest_file}  (month={latest_month}, v{latest_ver[0]}.{latest_ver[1]})")
+        latest_month, (latest_file, latest_sk) = max(best.items(), key=lambda item: item[1][1])
+        print(f"[Auto-detect] Latest: {os.path.basename(latest_file)}  (month={latest_month}, {_ver_str(latest_sk)})")
         if len(best) > 1:
             print(f"  Other available months: {[m for m in sorted(best.keys(), key=lambda x: _MONTHS_FULL.index(x)) if m != latest_month]}")
-        return chosen
+        return latest_file
 
     # Fall back to most-recently-modified xlsx if no versioned files found
     if no_month:
-        no_month.sort(key=lambda x: os.path.getmtime(os.path.join(SCRIPT_DIR, x)), reverse=True)
-        chosen = os.path.join(SCRIPT_DIR, no_month[0])
-        print(f"[Auto-detect] No versioned file found; using most-recently-modified: {no_month[0]}")
+        no_month.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        chosen = no_month[0]
+        print(f"[Auto-detect] No versioned file found; using most-recently-modified: {os.path.basename(chosen)}")
         return chosen
 
     return None
+
 
 
 if __name__ == "__main__":
