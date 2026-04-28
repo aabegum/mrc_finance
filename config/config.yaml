@@ -42,7 +42,7 @@ APP:
       MC:   0.5
       TSI:  0.5
       NUC:  0.5 
-    ABNS_Max_Projects: 0  # 0 means show all ABNS projects on the callout
+    ABNS_Max_Projects: 0  # 0 means show all ABNS projects on the callout #Awarded But, Not Signed
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -271,6 +271,11 @@ Excel_Mapping:
     # WIP & BL sheet row index
     WIP_DataStartRow: 3
 
+    # EBIT margin % rows in Summary TL sheet (0-indexed Python rows = Excel row - 1)
+    EBIT_Pct_Actual: 66    # Excel row 67 — EBIT % actual per month
+    EBIT_Pct_Budget: 67    # Excel row 68 — EBIT % budget per month
+    Net_Fees_Pct:    68    # Excel row 69 — Net Fees % per month
+
   Columns:
     # Summary Sheet Columns (Start/End for range)
     NS_kTL_Start: 2
@@ -324,4 +329,39 @@ Excel_Mapping:
     MON_BU_Base: 2      # BU NS/EBIT arrays (col52-65, 14 values): [0]=2025, [1]=2026Target, [2]=Jan
     MON_OI_Base: 2
     OI_Col_Base: 6
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# DASHBOARD SETTINGS
+# Settings specific to the Streamlit dashboard (not the PPTX generator).
+# ════════════════════════════════════════════════════════════════════════════
+Dashboard:
+
+  # Number format
+  KTL_Decimal_Places: 2          # Decimal places for kTL metric card values
+
+  # WIP thresholds (raw TL)
+  WIP_Neg_Threshold: -1000       # Include negatives below this value (< -1000 TL = significant negative WIP)
+
+  # Chart display limits
+  Chart_Top_N_Projects: 30       # Max projects shown in OI and WIP bar charts
+  Client_Top_N: 10               # Max clients in Top Clients scenario tab
+  Chart_Label_Min_Pct: 0.9      # Hide bar label if segment is < 3% of its own bar's total height
+
+  # Data loading limits
+  ExtProd_Row_Limit: 5000        # Max rows read from Ext. Prod. sheet
+
+  # Pipeline Health target column
+  BU_Target_Col_Index: 1         # Index in bu_ns cats for 2026 Target (MON_BU_Base=2 → [0]=prior yr, [1]=target)
+
+  # Cost type display order in Project History (types not listed appear at the end)
+  CostType_Order:
+    - "GROSS FEES"
+    - "REIMBURSABLES"
+    - "SUBCON 1"
+    - "SUBCON 2"
+    - "ASSOCIATE 1"
+    - "ENG. COST"
+    - "PROJECT EXP"
+    - "PROJECT EXP ACCR"
 

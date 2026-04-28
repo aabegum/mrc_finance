@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from config_loader import ConfigLoader
@@ -19,13 +20,28 @@ SCRIPT_DIR = Path(__file__).parent
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-_cfg    = ConfigLoader(str(SCRIPT_DIR / "config"))
-_r_cfg  = _cfg.get("Excel_Mapping.Rows")    or {}
-_c_cfg  = _cfg.get("Excel_Mapping.Columns") or {}
-_o_cfg  = _cfg.get("Excel_Mapping.Offsets") or {}
+_cfg      = ConfigLoader(str(SCRIPT_DIR / "config"))
+_r_cfg    = _cfg.get("Excel_Mapping.Rows")    or {}
+_c_cfg    = _cfg.get("Excel_Mapping.Columns") or {}
+_o_cfg    = _cfg.get("Excel_Mapping.Offsets") or {}
+_dash_cfg = _cfg.get("Dashboard")             or {}
+
+# ── Dashboard display constants (all sourced from Dashboard section in config) ──
+_KTLD               = int(_dash_cfg.get("KTL_Decimal_Places",    2))
+_WIP_NEG_THR        = int(_dash_cfg.get("WIP_Neg_Threshold",     -1000))
+_CHART_TOP_N        = int(_dash_cfg.get("Chart_Top_N_Projects",  30))
+_CLIENT_TOP_N       = int(_dash_cfg.get("Client_Top_N",          10))
+_CHART_LABEL_PCT    = float(_dash_cfg.get("Chart_Label_Min_Pct", 0.03))
+_EXT_PROD_ROW_LIMIT = int(_dash_cfg.get("ExtProd_Row_Limit",     5000))
+_BU_TARGET_IDX      = int(_dash_cfg.get("BU_Target_Col_Index",   1))
+_COST_TYPE_ORDER    = _dash_cfg.get("CostType_Order") or [
+    "GROSS FEES", "REIMBURSABLES", "SUBCON 1", "SUBCON 2",
+    "ASSOCIATE 1", "ENG. COST", "PROJECT EXP", "PROJECT EXP ACCR",
+]
 
 # ── Colors (sourced from config.yaml) ─────────────────────────────────────────
 PRIMARY  = _cfg.get("THEMES.premium.Colors.Dark.Hex") or "#1E3A8A"
+_FONT    = _cfg.get("THEMES.premium.Typography.Font_Family") or "Segoe UI"
 _bu_cfg  = _cfg.get("BU_Colors") or {}
 BU_COLORS = {
     "ENG":  _bu_cfg.get("ENG",  "#0EA5E9"),
@@ -164,20 +180,27 @@ def human_tl(v):
     return f"{sign}{av:,.0f}"
 
 
-def fmt_ktl(v, d=2):
-    """Format a kTL value with d decimal places and thousand separators."""
-    try:
-        return f"{float(v):,.{d}f}"
-    except Exception:
-        return "0.00"
+def _tr_num(s: str) -> str:
+    """Swap US separators to Turkish: 1,234.56 → 1.234,56"""
+    return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
-def fmt_tl_as_ktl(v, d=2):
-    """Convert raw TL to kTL and format with d decimal places."""
+def fmt_ktl(v, d=None):
+    """Format a kTL value with d decimal places and thousand separators (Turkish format)."""
+    _d = _KTLD if d is None else d
     try:
-        return f"{float(v) / 1000:,.{d}f}"
+        return _tr_num(f"{float(v):,.{_d}f}")
     except Exception:
-        return "0.00"
+        return f"0,{'0' * _KTLD}"
+
+
+def fmt_tl_as_ktl(v, d=None):
+    """Convert raw TL to kTL and format with d decimal places (Turkish format)."""
+    _d = _KTLD if d is None else d
+    try:
+        return _tr_num(f"{float(v) / 1000:,.{_d}f}")
+    except Exception:
+        return f"0,{'0' * _KTLD}"
 
 
 def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -375,8 +398,10 @@ def load_month(filepath: str):
     oi_projects.sort(key=lambda x: x["value"], reverse=True)
 
     # WIP projects — Nuclear excluded by default but collected separately for optional display
-    wip_projects     = []
-    wip_projects_nuc = []
+    wip_projects      = []
+    wip_projects_nuc  = []
+    wip_gross_total     = 0.0  # Grand total: ALL non-NUC WIP (pos+neg) before 1M filter
+    wip_gross_total_nuc = 0.0  # Same for NUC
     for ri in range(R["WIP_DataStartRow"], len(df_wip)):
         row       = df_wip.iloc[ri]
         proj_type = str(row.iloc[C["WIP_Col_Type"]]).strip()   if pd.notna(row.iloc[C["WIP_Col_Type"]])   else ""
@@ -388,9 +413,15 @@ def load_month(filepath: str):
         bu_raw = str(row.iloc[C["WIP_Col_BU"]]).strip() if pd.notna(row.iloc[C["WIP_Col_BU"]]) else ""
         bu     = BU_ABBREV.get(bu_raw, bu_raw)
         wip_tl = safe_float(row.iloc[C["WIP_Col_WIP_TL"]])
-        # Mirror reporting code: skip zeros and near-zero negatives (-1000 < wip_tl <= 0)
-        # Include: significant positives (>= WIP_MIN_TL) and significant negatives (< -1000)
-        if wip_tl > -1000 and wip_tl < WIP_MIN_TL:
+        # Accumulate grand total BEFORE threshold filter (non-zero entries only)
+        if wip_tl != 0:
+            if bu == "NUC":
+                wip_gross_total_nuc += wip_tl
+            else:
+                wip_gross_total += wip_tl
+        # Mirror reporting code: skip zeros and near-zero negatives.
+        # Include: significant positives (>= WIP_MIN_TL) and significant negatives (< WIP_NEG_THR).
+        if wip_tl > _WIP_NEG_THR and wip_tl < WIP_MIN_TL:
             continue
         _entry = {
             "name":          str(row.iloc[C["WIP_Col_Name"]]).strip()          if pd.notna(row.iloc[C["WIP_Col_Name"]])          else "",
@@ -509,7 +540,9 @@ def load_month(filepath: str):
         },
         "oi_projects":      oi_projects,
         "wip_projects":     wip_projects,
-        "wip_projects_nuc": wip_projects_nuc,
+        "wip_projects_nuc":   wip_projects_nuc,
+        "wip_gross_total":    wip_gross_total,
+        "wip_gross_total_nuc": wip_gross_total_nuc,
         "abns_projects":    abns_projects,
         "abns_total":     abns_total,
         "bu_ns":          bu_ns,
@@ -634,7 +667,7 @@ def load_margin_data(filepath: str):
                     if "ORIGINAL CURRENCY" in h_row:                 ext_cols["currency"] = h_row.index("ORIGINAL CURRENCY")
                     break
 
-        _EXT_ROW_LIMIT = 5000
+        _EXT_ROW_LIMIT = _EXT_PROD_ROW_LIMIT
         if len(df_ext) > _EXT_ROW_LIMIT:
             st.warning(
                 f"'Ext. Prod.' sheet has {len(df_ext)} rows but only the first "
@@ -768,71 +801,99 @@ def merge_margin_data(selected_months):
 # ── Chart helpers ──────────────────────────────────────────────────────────────
 def chart_stacked(data, title, keys, color_palette=None):
     n    = min(len(data["cats"]), min(len(data[k]) for k in keys))
-    df   = pd.DataFrame({"Category": data["cats"][:n]})
-    for k in keys:
-        df[k] = data[k][:n]
-    df_m = df.melt("Category", var_name="Tier", value_name="Value")
-    # Abbreviated labels — hide if segment is too small to be legible
-    _seg_max = df_m["Value"].abs().max() or 1
-    df_m["Label"] = df_m["Value"].apply(
-        lambda v: human_k(v) if abs(v) / _seg_max >= 0.03 else ""
-    )
+    cats = data["cats"][:n]
+
+    # Per-bar positive totals (used for labelling and totals-above-bar)
+    pos_totals = [sum(max(data[k][i], 0) for k in keys) for i in range(n)]
+
     colors = color_palette or (
         [BU_COLORS.get(k, "#0EA5E9") for k in keys]
         if any(k in BU_COLORS for k in keys)
         else ["#0EA5E9", "#10B981", "#F59E0B", "#E11D48"]
     )
-    fig = px.bar(
-        df_m, x="Category", y="Value", color="Tier", title=title,
-        color_discrete_sequence=colors, barmode="stack",
-        text="Label", hover_data={"Value": ":,.0f"},
-    )
+
+    fig = go.Figure()
+    for ki, key in enumerate(keys):
+        vals  = [data[key][i] for i in range(n)]
+        texts = []
+        for i, v in enumerate(vals):
+            t = pos_totals[i]
+            # Label shown only when segment physically has room — constraintext="inside"
+            # handles the final pixel-level check; here we only drop zero/negative and
+            # single-tier dominant bars (which are covered by the total label above).
+            if t <= 0 or v <= 0 or v / t >= 0.95:
+                texts.append("")
+            else:
+                texts.append(human_k(v))
+        fig.add_trace(go.Bar(
+            x=cats, y=vals, name=key,
+            marker_color=colors[ki % len(colors)],
+            text=texts,
+            textposition="inside",
+            insidetextanchor="middle",
+            constraintext="inside",   # Plotly hides if text doesn't physically fit
+            textfont=dict(size=13, color="white"),  # larger font = stricter physical fit check
+            hovertemplate=f"<b>{key}</b>: %{{y:,.0f}}<extra></extra>",
+        ))
+
+    # Total label above each bar via Scatter text trace (avoids add_annotation
+    # which breaks categorical axis when category names look numeric like "2024")
+    fig.add_trace(go.Scatter(
+        x=cats,
+        y=pos_totals,
+        mode="text",
+        text=[human_k(t) if t > 0 else "" for t in pos_totals],
+        textposition="top center",
+        textfont=dict(size=10, color=PRIMARY, family=_FONT),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
     fig.update_layout(
+        barmode="stack",
         plot_bgcolor="white",
-        font=dict(family="Segoe UI", color=PRIMARY),
-        xaxis_tickangle=-45,
-        margin=dict(t=80, b=20),
+        font=dict(family=_FONT, color=PRIMARY),
+        title=title or "",
+        xaxis=dict(type="category", categoryorder="array", categoryarray=cats, tickangle=-45),
+        yaxis=dict(rangemode="tozero"),
+        margin=dict(t=80, b=20, r=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         legend_title_text="",
-    )
-    fig.update_traces(
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        cliponaxis=False,
     )
     return fig
 
 
 def chart_grouped(data, title, keys, color_palette=None):
     n    = min(len(data["cats"]), min(len(data[k]) for k in keys))
-    df   = pd.DataFrame({"Category": data["cats"][:n]})
-    for k in keys:
-        df[k] = data[k][:n]
-    df_m   = df.melt("Category", var_name="Tier", value_name="Value")
-    _seg_max = df_m["Value"].abs().max() or 1
-    df_m["Label"] = df_m["Value"].apply(
-        lambda v: human_k(v) if abs(v) / _seg_max >= 0.05 else ""
-    )
+    cats = data["cats"][:n]
     colors = color_palette or ["#0EA5E9", "#10B981", "#F59E0B"]
-    fig    = px.bar(
-        df_m, x="Category", y="Value", color="Tier", title=title,
-        color_discrete_sequence=colors,
-        barmode="group", text="Label", hover_data={"Value": ":,.0f"},
-    )
+
+    fig = go.Figure()
+    for ki, key in enumerate(keys):
+        vals  = [data[key][i] for i in range(n)]
+        # Labels above bars — outside position avoids the rotated-text problem in grouped charts
+        texts = [human_k(v) if v != 0 else "" for v in vals]
+        fig.add_trace(go.Bar(
+            x=cats, y=vals, name=key,
+            marker_color=colors[ki % len(colors)],
+            text=texts,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=10, color=PRIMARY),
+            hovertemplate=f"<b>{key}</b>: %{{y:,.0f}}<extra></extra>",
+        ))
+
     fig.update_layout(
+        barmode="group",
         plot_bgcolor="white",
-        font=dict(family="Segoe UI", color=PRIMARY),
-        xaxis_tickangle=-45,
+        font=dict(family=_FONT, color=PRIMARY),
+        title=title or "",
+        xaxis=dict(type="category", categoryorder="array", categoryarray=cats, tickangle=-45),
+        yaxis=dict(rangemode="tozero"),
         margin=dict(t=80, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         legend_title_text="",
-    )
-    fig.update_traces(
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-        cliponaxis=False,
+        uniformtext=dict(mode="hide", minsize=8),
     )
     return fig
 
@@ -840,7 +901,7 @@ def chart_grouped(data, title, keys, color_palette=None):
 def chart_projects(projects, title):
     if not projects:
         return None
-    df          = pd.DataFrame(projects[:30])
+    df          = pd.DataFrame(projects[:_CHART_TOP_N])
     df["label"] = df["value"].apply(human_k)
     fig = px.bar(
         df, x="value", y="project", color="bu", orientation="h",
@@ -851,7 +912,7 @@ def chart_projects(projects, title):
     )
     fig.update_layout(
         plot_bgcolor="white",
-        font=dict(family="Segoe UI", color=PRIMARY),
+        font=dict(family=_FONT, color=PRIMARY),
         yaxis_title="", xaxis_title="kTL",
         margin=dict(t=60, r=130),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -864,7 +925,7 @@ def chart_projects(projects, title):
 def chart_wip(wip_list, title):
     if not wip_list:
         return None
-    df          = pd.DataFrame(wip_list[:30])
+    df          = pd.DataFrame(wip_list[:_CHART_TOP_N])
     df["label"] = df["wip_tl"].apply(human_tl)
     fig = px.bar(
         df, x="wip_tl", y="name", color="bu", orientation="h",
@@ -875,7 +936,7 @@ def chart_wip(wip_list, title):
     )
     fig.update_layout(
         plot_bgcolor="white",
-        font=dict(family="Segoe UI", color=PRIMARY),
+        font=dict(family=_FONT, color=PRIMARY),
         yaxis_title="", xaxis_title="TL",
         margin=dict(t=60, r=130),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -1086,17 +1147,18 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
     ns_idx     = _cat_index(ns["cats"], month_abbr)
     eoy_idx    = _find_eoy_idx(ns["cats"])
 
-    # Metric cards show per-month delta; charts use the full cumulative array
-    totals = {k: monthly_val(ns[k], ns["cats"], ns_idx) for k in k_list}
-    totals["Total"] = sum(totals.values())
+    # Metric cards show per-month delta; charts use the full cumulative array.
+    # Round each value to _KTLD before summing so Total matches the displayed sum exactly.
+    totals = {k: round(monthly_val(ns[k], ns["cats"], ns_idx), _KTLD) for k in k_list}
+    totals["Total"] = round(sum(totals.values()), _KTLD)
 
     prev_totals = {}
     if p_ns and prev_sm:
         p_abbr = prev_sm.split()[0][:3]
         p_idx  = _cat_index(p_ns["cats"], p_abbr)
         if p_idx != -1:
-            prev_totals = {k: monthly_val(p_ns[k], p_ns["cats"], p_idx) for k in k_list}
-            prev_totals["Total"] = sum(prev_totals.values())
+            prev_totals = {k: round(monthly_val(p_ns[k], p_ns["cats"], p_idx), _KTLD) for k in k_list}
+            prev_totals["Total"] = round(sum(prev_totals.values()), _KTLD)
 
     all_metric_keys = k_list + ["Total"]
 
@@ -1127,6 +1189,23 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
             eoy_cols[idx_m].metric(f"EOY {k}", fmt_ktl(eoy_val))
         eoy_cols[len(k_list)].metric("EOY Total", fmt_ktl(eoy_total))
 
+    # ABNS (Awarded But, Not Signed) — shown in Net Sales tab per business request
+    if is_total:
+        _abns_total = data.get("abns_total", 0.0)
+        _abns_projs = data.get("abns_projects", [])
+        if _abns_total > 0:
+            st.caption("ABNS — Awarded But, Not Signed (kTL)")
+            _ac1, _ac2 = st.columns([1, 3])
+            _ac1.metric("Total ABNS", fmt_ktl(_abns_total))
+            if _abns_projs:
+                with _ac2.expander(f"ABNS Projects ({len(_abns_projs)})", expanded=False):
+                    _df_abns = pd.DataFrame(_abns_projs)
+                    _df_abns["Value (kTL)"] = _df_abns["value"].apply(fmt_ktl)
+                    st.dataframe(
+                        _df_abns[["project", "client", "Value (kTL)"]],
+                        hide_index=True, use_container_width=True,
+                    )
+
     palette = None if is_total else bu_tier_colors(bu_name)
     st.plotly_chart(
         chart_stacked(ns, "", k_list, palette),
@@ -1152,13 +1231,14 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         prev_abbr     = prev_sm.split()[0][:3]
         prev_ebit_idx = _cat_index(p_ebit["cats"], prev_abbr)
 
-    # Metric cards show per-month delta; charts use the full cumulative array
+    # Metric cards show per-month delta; charts use the full cumulative array.
+    # Round before delta so display values are self-consistent.
     st.caption(f"Monthly — {sm} (kTL)")
     mcols = st.columns(len(k_list))
     for idx_m, k in enumerate(k_list):
-        val   = monthly_val(ebit[k], ebit["cats"], ebit_idx)
-        p_val = monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx) if p_ebit and prev_ebit_idx != -1 else None
-        delta = val - p_val if p_val is not None else None
+        val   = round(monthly_val(ebit[k], ebit["cats"], ebit_idx), _KTLD)
+        p_val = round(monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx), _KTLD) if p_ebit and prev_ebit_idx != -1 else None
+        delta = round(val - p_val, _KTLD) if p_val is not None else None
         mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
 
     if ebit_idx != -1:
@@ -1215,22 +1295,6 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
                 ytd_oi_total += ytd_val
                 ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
             ytd_cols[4].metric("YTD Total", fmt_ktl(ytd_oi_total))
-
-        # ABNS
-        _abns_total = data.get("abns_total", 0.0)
-        _abns_projs = data.get("abns_projects", [])
-        if _abns_total > 0:
-            st.caption("ABNS — Already Booked, Not Started (kTL)")
-            _ac1, _ac2 = st.columns([1, 3])
-            _ac1.metric("Total ABNS", fmt_ktl(_abns_total))
-            if _abns_projs:
-                with _ac2.expander(f"ABNS Projects ({len(_abns_projs)})", expanded=False):
-                    _df_abns = pd.DataFrame(_abns_projs)
-                    _df_abns["Value (kTL)"] = _df_abns["value"].apply(fmt_ktl)
-                    st.dataframe(
-                        _df_abns[["project", "client", "Value (kTL)"]],
-                        hide_index=True, use_container_width=True,
-                    )
 
         # Stacked OI chart (all BUs combined over time)
         st.plotly_chart(
@@ -1316,11 +1380,19 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             delta_wip = fmt_tl_as_ktl(total_wip - sum(p["wip_tl"] for p in prev_wip))
 
     _wip_neg_count = sum(1 for p in wip if p["wip_tl"] < 0)
-    _wip_lbl = f"Total WIP ({len(wip)} projs"
+    _wip_lbl = f"Total WIP ≥1M ({len(wip)} projs"
     if _wip_neg_count:
         _wip_lbl += f", incl. {_wip_neg_count} negative"
     _wip_lbl += ") (kTL)"
-    st.metric(_wip_lbl, fmt_tl_as_ktl(total_wip), delta=delta_wip)
+
+    # Grand total mirrors reporting code: ALL projects (incl. below 1M threshold)
+    _grand = data.get("wip_gross_total", 0.0)
+    if include_nuc:
+        _grand += data.get("wip_gross_total_nuc", 0.0)
+
+    _mc1, _mc2 = st.columns(2)
+    _mc1.metric(_wip_lbl, fmt_tl_as_ktl(total_wip), delta=delta_wip)
+    _mc2.metric("Grand Total WIP (all projects, kTL)", fmt_tl_as_ktl(_grand))
 
     fig = chart_wip([p for p in wip if p["wip_tl"] > 0], "")
     if fig:
@@ -1381,7 +1453,7 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
                 )
                 fig_cbar.update_layout(
                     plot_bgcolor="white", showlegend=False,
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     margin=dict(t=40, b=0),
                 )
                 fig_cbar.update_traces(textposition="outside", cliponaxis=False)
@@ -1458,7 +1530,7 @@ with tab1:
                 _v2 = sum(monthly_val(_ns2[kk], _ns2["cats"], _i2) for kk in _k_ns) if _k == "Total" else monthly_val(_ns2[_k], _ns2["cats"], _i2)
                 _pct = (_v2 - _v1) / abs(_v1) * 100 if _v1 else None
                 _dcols[_ci].metric(_k, f"{_pct:+.1f}%" if _pct is not None else "—",
-                                   delta=human_k(_v2 - _v1) if _v1 else None)
+                                   delta=fmt_ktl(_v2 - _v1) if _v1 else None)
 
 # ── Tab 2: EBIT ───────────────────────────────────────────────────────────────
 with tab2:
@@ -1488,7 +1560,7 @@ with tab2:
                 _v2 = monthly_val(_eb2[_k], _eb2["cats"], _i2)
                 _pct = (_v2 - _v1) / abs(_v1) * 100 if _v1 else None
                 _dcols[_ci].metric(_k, f"{_pct:+.1f}%" if _pct is not None else "—",
-                                   delta=human_k(_v2 - _v1) if _v1 else None)
+                                   delta=fmt_ktl(_v2 - _v1) if _v1 else None)
 
 # ── Tab 3: Order Intake ───────────────────────────────────────────────────────
 with tab3:
@@ -1679,10 +1751,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                 f"| **BU:** {proj_info['bu']} | **Currency:** {proj_info['currency']}"
             )
 
-            _type_order = [
-                "GROSS FEES", "REIMBURSABLES", "SUBCON 1", "SUBCON 2",
-                "ASSOCIATE 1", "ENG. COST", "PROJECT EXP", "PROJECT EXP ACCR",
-            ]
+            _type_order = _COST_TYPE_ORDER
             _all_type_data  = proj_info.get("type_data", {})
             _available_types = list(_all_type_data.keys())
             _available_types_sorted = (
@@ -1801,7 +1870,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     )
                     fig_margin.update_layout(
                         plot_bgcolor="white",
-                        font=dict(family="Segoe UI", color=PRIMARY),
+                        font=dict(family=_FONT, color=PRIMARY),
                         yaxis_title="Production (TL)",
                         xaxis_title="",
                         xaxis_tickangle=-45,
@@ -1867,7 +1936,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     )
                     fig_wip.update_layout(
                         plot_bgcolor="white",
-                        font=dict(family="Segoe UI", color=PRIMARY),
+                        font=dict(family=_FONT, color=PRIMARY),
                         yaxis_title="WIP TL",
                         xaxis_title="",
                         xaxis_tickangle=-45,
@@ -1931,7 +2000,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             )
             _fig_busum.update_layout(
                 plot_bgcolor="white",
-                font=dict(family="Segoe UI", color=PRIMARY),
+                font=dict(family=_FONT, color=PRIMARY),
                 showlegend=False,
                 margin=dict(t=60, b=20),
             )
@@ -1959,7 +2028,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             )
             _fig_tier.update_layout(
                 plot_bgcolor="white",
-                font=dict(family="Segoe UI", color=PRIMARY),
+                font=dict(family=_FONT, color=PRIMARY),
                 showlegend=False,
                 margin=dict(t=60, b=20),
             )
@@ -1992,7 +2061,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 )
                 _fig_ebit.update_layout(
                     plot_bgcolor="white",
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     showlegend=False, margin=dict(t=60, b=20),
                 )
                 _fig_ebit.update_traces(textposition="outside", cliponaxis=False)
@@ -2083,7 +2152,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             )
             _abbr_l = _sm_latest.split()[0][:3]
             _pipe_rows = []
-            _TARGET_IDX = 1  # MON_BU_Base=2 → [0]=2025, [1]=2026 Target, [2]=Jan
+            _TARGET_IDX = _BU_TARGET_IDX  # MON_BU_Base=2 → [0]=2025, [1]=2026 Target, [2]=Jan
             for _bu in ["ENG", "MC", "T&SI", "NUC"]:
                 _bd  = _d_latest["bu_ns"][_bu]
                 _mi  = _cat_index(_bd["cats"], _abbr_l)
@@ -2127,7 +2196,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 # Abbreviated labels
                 _pipe_seg_max = _df_melt["Value (kTL)"].abs().max() or 1
                 _df_melt["Label"] = _df_melt["Value (kTL)"].apply(
-                    lambda v: human_k(v) if abs(v) / _pipe_seg_max >= 0.03 else ""
+                    lambda v: human_k(v) if abs(v) / _pipe_seg_max >= _CHART_LABEL_PCT else ""
                 )
                 _fig_pipe = px.bar(
                     _df_melt, x="BU", y="Value (kTL)", color="BU_Stage",
@@ -2142,7 +2211,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 )
                 _fig_pipe.update_layout(
                     plot_bgcolor="white",
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                     legend_title_text="",
                     margin=dict(t=80, b=20),
@@ -2204,7 +2273,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     _cli_totals[_c] = _cli_totals.get(_c, 0) + _p["wip_tl"]
 
         if _cli_totals:
-            _top10 = sorted(_cli_totals.items(), key=lambda x: -x[1])[:10]
+            _top10 = sorted(_cli_totals.items(), key=lambda x: -x[1])[:_CLIENT_TOP_N]
             _df_top = pd.DataFrame(_top10, columns=["Client", "Value"])
             _df_top["Label"] = _df_top["Value"].apply(_formatter)
 
@@ -2219,7 +2288,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 )
                 _fig_tbar.update_layout(
                     plot_bgcolor="white",
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     yaxis_title="", xaxis_title=_unit,
                     margin=dict(t=60, r=20),
                     height=max(350, len(_df_top) * 32),
@@ -2322,26 +2391,26 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 st.markdown(f"**{_lr['Period']} — Selected: {_sel_label}**")
                 _mc1, _mc2, _mc3, _mc4 = st.columns(4)
                 _mc1.metric(
-                    "NS — Selected BUs",
-                    human_k(_lr["NS Sel"]),
-                    delta=f"−{human_k(_lr['NS Excl'])} excluded  |  {_lr['NS Pct']:.0%} of total",
+                    "NS — Selected BUs (kTL)",
+                    fmt_ktl(_lr["NS Sel"]),
+                    delta=f"−{fmt_ktl(_lr['NS Excl'])} excl  |  {_lr['NS Pct']:.0%} of total",
                     delta_color="off",
                 )
                 _mc2.metric(
-                    "NS — Excluded Impact",
-                    human_k(_lr["NS Excl"]),
+                    "NS — Excluded Impact (kTL)",
+                    fmt_ktl(_lr["NS Excl"]),
                     delta=f"{1 - _lr['NS Pct']:.0%} of total",
                     delta_color="off",
                 )
                 _mc3.metric(
-                    "EBIT — Selected BUs",
-                    human_k(_lr["EBIT Sel"]),
-                    delta=f"−{human_k(_lr['EBIT Excl'])} excluded  |  {_lr['EBIT Pct']:.0%} of total",
+                    "EBIT — Selected BUs (kTL)",
+                    fmt_ktl(_lr["EBIT Sel"]),
+                    delta=f"−{fmt_ktl(_lr['EBIT Excl'])} excl  |  {_lr['EBIT Pct']:.0%} of total",
                     delta_color="off",
                 )
                 _mc4.metric(
-                    "EBIT — Excluded Impact",
-                    human_k(_lr["EBIT Excl"]),
+                    "EBIT — Excluded Impact (kTL)",
+                    fmt_ktl(_lr["EBIT Excl"]),
                     delta=f"{1 - _lr['EBIT Pct']:.0%} of total",
                     delta_color="off",
                 )
@@ -2349,8 +2418,8 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             # ── Charts ────────────────────────────────────────────────────────
             if _mix_chart_rows:
                 _df_mix = pd.DataFrame(_mix_chart_rows)
-                _df_mix["NS_label"]   = _df_mix["NS"].apply(human_k)
-                _df_mix["EBIT_label"] = _df_mix["EBIT"].apply(human_k)
+                _df_mix["NS_label"]   = _df_mix["NS"].apply(fmt_ktl)
+                _df_mix["EBIT_label"] = _df_mix["EBIT"].apply(fmt_ktl)
 
                 _color_map = {
                     bu: (BU_COLORS.get(bu, "#888888") if bu in _sel_bus else "#D1D5DB")
@@ -2366,7 +2435,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 )
                 _fig_mix_ns.update_layout(
                     plot_bgcolor="white",
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     showlegend=False,
                     margin=dict(t=60, b=20),
                 )
@@ -2382,7 +2451,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 )
                 _fig_mix_eb.update_layout(
                     plot_bgcolor="white",
-                    font=dict(family="Segoe UI", color=PRIMARY),
+                    font=dict(family=_FONT, color=PRIMARY),
                     showlegend=False,
                     margin=dict(t=60, b=20),
                 )
@@ -2393,15 +2462,15 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             if _mix_summary:
                 st.markdown("**Summary across all selected months**")
                 _df_mix_tbl = pd.DataFrame([{
-                    "Period":            r["Period"],
-                    "NS Selected":       human_k(r["NS Sel"]),
-                    "NS Total":          human_k(r["NS Total"]),
-                    "NS Excl. Impact":   human_k(r["NS Excl"]),
-                    "NS Coverage":       f"{r['NS Pct']:.0%}",
-                    "EBIT Selected":     human_k(r["EBIT Sel"]),
-                    "EBIT Total":        human_k(r["EBIT Total"]),
-                    "EBIT Excl. Impact": human_k(r["EBIT Excl"]),
-                    "EBIT Coverage":     f"{r['EBIT Pct']:.0%}",
+                    "Period":                r["Period"],
+                    "NS Selected (kTL)":     fmt_ktl(r["NS Sel"]),
+                    "NS Total (kTL)":        fmt_ktl(r["NS Total"]),
+                    "NS Excl. Impact (kTL)": fmt_ktl(r["NS Excl"]),
+                    "NS Coverage":           f"{r['NS Pct']:.0%}",
+                    "EBIT Selected (kTL)":   fmt_ktl(r["EBIT Sel"]),
+                    "EBIT Total (kTL)":      fmt_ktl(r["EBIT Total"]),
+                    "EBIT Excl. (kTL)":      fmt_ktl(r["EBIT Excl"]),
+                    "EBIT Coverage":         f"{r['EBIT Pct']:.0%}",
                 } for r in _mix_summary])
                 st.dataframe(_df_mix_tbl, hide_index=True, use_container_width=True)
                 st.download_button(
