@@ -2,15 +2,25 @@ import colorsys
 import io
 import os
 import re
+import smtplib
 import subprocess
 import sys
 from datetime import datetime
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+    _AGGRID_AVAILABLE = True
+except ImportError:
+    _AGGRID_AVAILABLE = False
 
 from config_loader import ConfigLoader
 
@@ -203,6 +213,11 @@ def fmt_tl_as_ktl(v, d=None):
         return f"0,{'0' * _KTLD}"
 
 
+def _mfmt(v: float) -> str:
+    """Abbreviated format for metric-card values — avoids truncation in narrow columns."""
+    return human_k(v)
+
+
 def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -340,22 +355,25 @@ def load_month(filepath: str):
     df_oi  = pd.read_excel(xl, sheet_name="Order Intake", header=None)
     df_wip = pd.read_excel(xl, sheet_name="WIP & BL",    header=None)
 
-    # ── Row Offset Detection ── dynamic adjustment for file variations ──────────
+    # ── Row Offset Detection ── scan from sheet bottom upward ──────────────────
+    # Probing a fixed narrow range around the expected row fails for files with
+    # fewer projects (e.g. 2025 files) whose summary section sits higher up.
+    # Scanning upward from the sheet bottom is reliable for any file version.
     _oi_offset       = 0
     _oi_offset_found = False
     expected_cat_row = R["Categories_OI_kTL"]
     _oi_col_start    = _c_cfg.get("OI_kTL_Start", 4)
-    for probe_offset in range(-10, 25):
-        probe_row = expected_cat_row + probe_offset
-        if 0 <= probe_row < len(df_oi):
-            _c4 = str(df_oi.iloc[probe_row, _oi_col_start]).strip()
-            if _oi_col_start + 2 < len(df_oi.columns):
-                _c6 = str(df_oi.iloc[probe_row, _oi_col_start + 2]).strip()
-                if (_c4.split(".")[0].isdigit() and len(_c4.split(".")[0]) == 4) or "2025" in _c4:
-                    if "jan" in _c6.lower() or "feb" in _c6.lower():
-                        _oi_offset       = probe_offset
-                        _oi_offset_found = True
-                        break
+    _scan_start      = min(len(df_oi) - 1, expected_cat_row + 50)  # start at most 50 past expected
+    for scan_row in range(_scan_start, max(0, _scan_start - 300), -1):
+        _c4 = str(df_oi.iloc[scan_row, _oi_col_start]).strip()
+        if _oi_col_start + 2 < len(df_oi.columns):
+            _c6      = str(df_oi.iloc[scan_row, _oi_col_start + 2]).strip()
+            _c4_base = _c4.split(".")[0].strip()
+            if _c4_base.isdigit() and len(_c4_base) == 4:
+                if "jan" in _c6.lower() or "feb" in _c6.lower():
+                    _oi_offset       = scan_row - expected_cat_row
+                    _oi_offset_found = True
+                    break
     if not _oi_offset_found:
         st.warning(
             f"OI row offset detection failed for **{Path(filepath).name}**. "
@@ -883,17 +901,20 @@ def chart_grouped(data, title, keys, color_palette=None):
             hovertemplate=f"<b>{key}</b>: %{{y:,.0f}}<extra></extra>",
         ))
 
+    # Compute y-axis max with 18% headroom so "outside" bar labels never clip
+    all_vals = [v for k in keys for v in [data[k][i] for i in range(n)]]
+    _ymax = max(all_vals) * 1.18 if all_vals and max(all_vals) > 0 else None
+
     fig.update_layout(
         barmode="group",
         plot_bgcolor="white",
         font=dict(family=_FONT, color=PRIMARY),
         title=title or "",
         xaxis=dict(type="category", categoryorder="array", categoryarray=cats, tickangle=-45),
-        yaxis=dict(rangemode="tozero"),
+        yaxis=dict(rangemode="tozero", range=[0, _ymax] if _ymax else None),
         margin=dict(t=80, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         legend_title_text="",
-        uniformtext=dict(mode="hide", minsize=8),
     )
     return fig
 
@@ -1037,6 +1058,17 @@ if not selected_months:
     st.warning("Please select at least one month from the sidebar.")
     st.stop()
 
+# ── Context-aware metric formatter ────────────────────────────────────────────
+# In comparison mode (2+ months side-by-side) use abbreviated human_k to avoid
+# truncation in narrow columns. In single-month mode use fmt_ktl (full precision
+# with the kTL Decimal Places slider applied).
+if len(selected_months) > 1:
+    def _mfmt(v: float) -> str:
+        return human_k(v)
+else:
+    def _mfmt(v: float) -> str:
+        return fmt_ktl(v)
+
 with st.spinner("Loading data..."):
     loaded_data = fetch_all_data(tuple(selected_months))
 
@@ -1074,33 +1106,154 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# ── Run report ─────────────────────────────────────────────────────────────────
-if run_btn and sel_file:
     st.markdown("---")
-    with st.spinner(f"Generating PPTX for {gen_month}…"):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "generate_full_mbr_stacked.py"), str(sel_file)],
-            capture_output=True, text=True, cwd=str(SCRIPT_DIR),
+    with st.expander("⚙️ Display Settings"):
+        st.caption("Overrides config defaults for this session.")
+        st.slider("kTL Decimal Places", 0, 4, _KTLD,         key="ss_ktld")
+        st.slider("Chart Top-N Projects", 5, 50, _CHART_TOP_N, key="ss_chart_top_n")
+        st.slider("Top-N Clients", 5, 20, _CLIENT_TOP_N,     key="ss_client_top_n")
+        st.slider(
+            "Chart Label Min % (of bar)", 1, 10,
+            max(1, int(_CHART_LABEL_PCT * 100)), key="ss_label_pct_int",
         )
+
+    st.markdown("---")
+    with st.expander("📧 Email Settings"):
+        st.caption("SMTP credentials — session only, not stored on disk.")
+        st.text_input("SMTP Host", value="smtp.gmail.com",  key="em_host")
+        st.number_input("Port",    value=587, step=1, format="%d", key="em_port")
+        st.text_input("Username (sender)", value="", key="em_user")
+        st.text_input("Password / App-key", value="", type="password", key="em_pass")
+        st.text_input("Recipients (comma-separated)", value="", key="em_to")
+        st.caption("💡 For Gmail, use an App Password (not your login password).")
+
+    st.markdown("---")
+    st.markdown("### Generate + Email Report")
+    st.caption("Generate PPTX then email it:")
+    email_btn = st.button("📧 Generate + Email PPTX", use_container_width=True)
+
+# ── Email helper ───────────────────────────────────────────────────────────────
+def _send_pptx_email(pptx_path: str, month_label: str) -> str:
+    """Send generated PPTX as email attachment. Returns '' on success, error string on failure."""
+    host   = st.session_state.get("em_host", "smtp.gmail.com")
+    port   = int(st.session_state.get("em_port", 587))
+    user   = st.session_state.get("em_user", "")
+    pwd    = st.session_state.get("em_pass", "")
+    to_raw = st.session_state.get("em_to", "")
+    if not all([host, user, pwd, to_raw]):
+        return "Email settings incomplete. Fill in SMTP credentials in the sidebar."
+    recipients = [r.strip() for r in to_raw.split(",") if r.strip()]
+    if not recipients:
+        return "No valid recipient addresses found."
+    msg            = MIMEMultipart()
+    msg["From"]    = user
+    msg["To"]      = ", ".join(recipients)
+    msg["Subject"] = f"MRC Business Review — {month_label}"
+    msg.attach(MIMEText(
+        f"Please find the MRC Business Review report for {month_label} attached.", "plain"
+    ))
+    fname = Path(pptx_path).name
+    with open(pptx_path, "rb") as fh:
+        part = MIMEApplication(fh.read(), Name=fname)
+    part["Content-Disposition"] = f'attachment; filename="{fname}"'
+    msg.attach(part)
+    try:
+        with smtplib.SMTP(host, port) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.login(user, pwd)
+            smtp.sendmail(user, recipients, msg.as_string())
+        return ""
+    except Exception as exc:
+        return str(exc)
+
+
+# ── Run report ─────────────────────────────────────────────────────────────────
+def _run_generator(sel_file) -> tuple[int, str, str, str | None]:
+    """Run PPTX generator subprocess; return (returncode, stdout, stderr, pptx_path|None)."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / "generate_full_mbr_stacked.py"), str(sel_file)],
+        capture_output=True, text=True, cwd=str(SCRIPT_DIR),
+    )
+    pptx_path = None
     if result.returncode == 0:
-        st.success(f"Report generated successfully for {gen_month}!")
         done_line = next(
             (l.strip() for l in result.stdout.splitlines() if l.strip().startswith("[DONE]")),
             None,
         )
         if done_line:
+            # [DONE] path/to/file.pptx  OR  [DONE] Saved to path/to/file.pptx
+            _tail = done_line.removeprefix("[DONE]").strip()
+            for _tok in _tail.split():
+                if _tok.endswith(".pptx") and Path(_tok).exists():
+                    pptx_path = _tok
+                    break
+            if not pptx_path:
+                # try scanning SCRIPT_DIR for recently modified .pptx
+                _candidates = sorted(
+                    SCRIPT_DIR.glob("*.pptx"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if _candidates:
+                    pptx_path = str(_candidates[0])
+    return result.returncode, result.stdout, result.stderr, pptx_path
+
+
+if run_btn and sel_file:
+    st.markdown("---")
+    with st.spinner(f"Generating PPTX for {gen_month}…"):
+        _rc, _stdout, _stderr, _pptx_path = _run_generator(sel_file)
+    if _rc == 0:
+        st.success(f"Report generated successfully for {gen_month}!")
+        done_line = next(
+            (l.strip() for l in _stdout.splitlines() if l.strip().startswith("[DONE]")),
+            None,
+        )
+        if done_line:
             st.info(done_line.removeprefix("[DONE]").strip())
-        if result.stdout:
+        if _stdout:
             with st.expander("Show generation log", expanded=False):
-                st.code(result.stdout, language="")
+                st.code(_stdout, language="")
     else:
         st.error("Generator encountered an error — see details below.")
-        if result.stdout:
-            st.code(result.stdout, language="")
-        if result.stderr:
+        if _stdout:
+            st.code(_stdout, language="")
+        if _stderr:
             with st.expander("Error details", expanded=True):
-                st.code(result.stderr, language="")
+                st.code(_stderr, language="")
     st.markdown("---")
+
+if email_btn and sel_file:
+    st.markdown("---")
+    with st.spinner(f"Generating PPTX for {gen_month}…"):
+        _rc, _stdout, _stderr, _pptx_path = _run_generator(sel_file)
+    if _rc != 0:
+        st.error("PPTX generation failed — cannot send email.")
+        if _stderr:
+            with st.expander("Error details", expanded=True):
+                st.code(_stderr, language="")
+    elif not _pptx_path:
+        st.warning("PPTX generated but output file path could not be determined. Check the log.")
+        if _stdout:
+            with st.expander("Generation log", expanded=True):
+                st.code(_stdout, language="")
+    else:
+        st.success(f"PPTX generated: {Path(_pptx_path).name}")
+        with st.spinner("Sending email…"):
+            _err = _send_pptx_email(_pptx_path, gen_month)
+        if _err:
+            st.error(f"Email failed: {_err}")
+        else:
+            _to_display = st.session_state.get("em_to", "")
+            st.success(f"Email sent to {_to_display}")
+    st.markdown("---")
+
+
+# ── Apply sidebar display-setting overrides ────────────────────────────────────
+_KTLD            = int(st.session_state.get("ss_ktld",         _KTLD))
+_CHART_TOP_N     = int(st.session_state.get("ss_chart_top_n",  _CHART_TOP_N))
+_CLIENT_TOP_N    = int(st.session_state.get("ss_client_top_n", _CLIENT_TOP_N))
+_CHART_LABEL_PCT = st.session_state.get("ss_label_pct_int",    int(_CHART_LABEL_PCT * 100)) / 100
 
 
 # ── Filter helpers ─────────────────────────────────────────────────────────────
@@ -1167,7 +1320,7 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
     for idx_m, k in enumerate(all_metric_keys):
         val   = totals[k]
         delta = val - prev_totals.get(k, 0) if prev_totals else None
-        mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+        mcols[idx_m].metric(k, _mfmt(val), delta=_mfmt(delta) if delta is not None else None)
 
     if ns_idx != -1:
         st.caption("YTD Cumulative (kTL)")
@@ -1176,8 +1329,8 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         for idx_m, k in enumerate(k_list):
             ytd_val = ns[k][ns_idx] if ns_idx < len(ns[k]) else 0.0
             ytd_total += ytd_val
-            ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
-        ytd_cols[len(k_list)].metric("YTD Total", fmt_ktl(ytd_total))
+            ytd_cols[idx_m].metric(f"YTD {k}", _mfmt(ytd_val))
+        ytd_cols[len(k_list)].metric("YTD Total", _mfmt(ytd_total))
 
     if eoy_idx != -1:
         st.caption("End of Year (kTL)")
@@ -1186,8 +1339,8 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         for idx_m, k in enumerate(k_list):
             eoy_val = ns[k][eoy_idx] if eoy_idx < len(ns[k]) else 0.0
             eoy_total += eoy_val
-            eoy_cols[idx_m].metric(f"EOY {k}", fmt_ktl(eoy_val))
-        eoy_cols[len(k_list)].metric("EOY Total", fmt_ktl(eoy_total))
+            eoy_cols[idx_m].metric(f"EOY {k}", _mfmt(eoy_val))
+        eoy_cols[len(k_list)].metric("EOY Total", _mfmt(eoy_total))
 
     # ABNS (Awarded But, Not Signed) — shown in Net Sales tab per business request
     if is_total:
@@ -1211,6 +1364,26 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         chart_stacked(ns, "", k_list, palette),
         use_container_width=True, key=f"ns_{bu_name}_{sm}",
     )
+
+    # ── Chart data table ───────────────────────────────────────────────────────
+    with st.expander("📊 Chart Data (YTD Cumulative, kTL)", expanded=False):
+        _n_ns  = min(len(ns["cats"]), min(len(ns[k]) for k in k_list))
+        _deltas = {k: to_monthly_deltas(ns[k], ns["cats"]) for k in k_list}
+        _tbl_rows = []
+        for _i in range(_n_ns):
+            _row = {"Period": ns["cats"][_i]}
+            for k in k_list:
+                _row[f"{k} (Monthly)"] = fmt_ktl(_deltas[k][_i])
+                _row[f"{k} (YTD)"]     = fmt_ktl(ns[k][_i])
+            _tbl_rows.append(_row)
+        st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
+        st.download_button(
+            "⬇ Export NS Data",
+            df_to_excel_bytes(pd.DataFrame(_tbl_rows)),
+            file_name=f"NS_Data_{sm.replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"ns_data_export_{bu_name}_{sm}",
+        )
 
 
 def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
@@ -1239,27 +1412,133 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         val   = round(monthly_val(ebit[k], ebit["cats"], ebit_idx), _KTLD)
         p_val = round(monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx), _KTLD) if p_ebit and prev_ebit_idx != -1 else None
         delta = round(val - p_val, _KTLD) if p_val is not None else None
-        mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+        mcols[idx_m].metric(k, _mfmt(val), delta=_mfmt(delta) if delta is not None else None)
 
     if ebit_idx != -1:
         st.caption("YTD Cumulative (kTL)")
         ytd_cols = st.columns(len(k_list))
         for idx_m, k in enumerate(k_list):
             ytd_val = ebit[k][ebit_idx] if ebit_idx < len(ebit[k]) else 0.0
-            ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
+            ytd_cols[idx_m].metric(f"YTD {k}", _mfmt(ytd_val))
 
     if eoy_idx != -1:
         st.caption("End of Year (kTL)")
         eoy_cols = st.columns(len(k_list))
         for idx_m, k in enumerate(k_list):
             eoy_val = ebit[k][eoy_idx] if eoy_idx < len(ebit[k]) else 0.0
-            eoy_cols[idx_m].metric(f"EOY {k}", fmt_ktl(eoy_val))
+            eoy_cols[idx_m].metric(f"EOY {k}", _mfmt(eoy_val))
 
     ebit_palette = None if is_total else [BU_COLORS.get(bu_name, "#0EA5E9")]
     st.plotly_chart(
         chart_grouped(ebit, "", k_list, ebit_palette),
         use_container_width=True, key=f"ebit_{bu_name}_{sm}",
     )
+
+    # ── Chart data table ───────────────────────────────────────────────────────
+    with st.expander("📊 Chart Data (YTD Cumulative, kTL)", expanded=False):
+        _n_eb  = min(len(ebit["cats"]), min(len(ebit[k]) for k in k_list))
+        _ed    = {k: to_monthly_deltas(ebit[k], ebit["cats"]) for k in k_list}
+        _etbl  = []
+        for _i in range(_n_eb):
+            _row = {"Period": ebit["cats"][_i]}
+            for k in k_list:
+                _row[f"{k} (Monthly)"] = fmt_ktl(_ed[k][_i])
+                _row[f"{k} (YTD)"]     = fmt_ktl(ebit[k][_i])
+            _etbl.append(_row)
+        st.dataframe(pd.DataFrame(_etbl), hide_index=True, use_container_width=True)
+        st.download_button(
+            "⬇ Export EBIT Data",
+            df_to_excel_bytes(pd.DataFrame(_etbl)),
+            file_name=f"EBIT_Data_{sm.replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"ebit_data_export_{bu_name}_{sm}",
+        )
+
+    # ── EBIT % margin rates — computed from loaded EBIT / NS data ─────────────
+    # Rows 66-68 in the Excel can be empty; computing from data we already load
+    # is reliable and avoids depending on potentially-zeroed % rows.
+    if is_total:
+        _ns   = data["ns"]
+        _eb   = ebit  # already resolved above (ebit = data["ebit"] for is_total)
+
+        # Current-month YTD cumulative margin (safest for reporting)
+        _ns_idx  = _cat_index(_ns["cats"], month_abbr)
+        _ns_ytd  = _ns["Contract"][_ns_idx]     if _ns_idx  != -1 and _ns_idx  < len(_ns["Contract"])  else 0
+        _eb_ytd  = _eb["Contract"][ebit_idx]    if ebit_idx != -1 and ebit_idx < len(_eb["Contract"])   else 0
+        _act_pct = _eb_ytd / _ns_ytd * 100      if _ns_ytd  != 0  else 0
+
+        # Budget margin: use 2026 Target column in each cats list
+        _ns_t_idx = next((i for i, c in enumerate(_ns["cats"]) if "target" in str(c).lower()), -1)
+        _eb_t_idx = next((i for i, c in enumerate(_eb["cats"]) if "target" in str(c).lower()), -1)
+        _ns_tgt   = _ns["Contract"][_ns_t_idx] if _ns_t_idx != -1 and _ns_t_idx < len(_ns["Contract"]) else 0
+        _eb_tgt   = _eb["Contract"][_eb_t_idx] if _eb_t_idx != -1 and _eb_t_idx < len(_eb["Contract"]) else 0
+        _bud_pct  = _eb_tgt / _ns_tgt * 100    if _ns_tgt  != 0  else 0
+
+        # Net Fees %: try the stored row first (it may be non-zero); fall back to N/A
+        _epct    = data.get("ebit_pct")
+        _ep_i    = _cat_index(_epct["cats"], month_abbr) if _epct else -1
+        _nf_raw  = safe_float(_epct["NetFees_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["NetFees_Pct"])) else 0
+        _nf_pct  = _nf_raw * 100 if _nf_raw != 0 else None  # None = no data
+
+        st.caption(f"EBIT Margin Rates — {sm} (YTD Cumulative)")
+        _pc1, _pc2, _pc3 = st.columns(3)
+        _pc1.metric(
+            "EBIT % (Actual, YTD)",
+            f"{_act_pct:.1f}%",
+            delta=f"{_act_pct - _bud_pct:+.1f} pp vs Budget",
+        )
+        _pc2.metric("EBIT % (Budget target)", f"{_bud_pct:.1f}%")
+        _pc3.metric("Net Fees %", f"{_nf_pct:.1f}%" if _nf_pct is not None else "N/A")
+
+        # Monthly trend: YTD cumulative EBIT % for each month column
+        _ep_month_idxs = [
+            i for i, c in enumerate(_eb["cats"][:len(_eb["Contract"])])
+            if str(c).strip().lower()[:3] in _MONTH_ABBREVS
+        ]
+        if _ep_month_idxs:
+            _ep_cats   = [_eb["cats"][i] for i in _ep_month_idxs]
+            _ep_act    = []
+            _ep_bud_ln = []
+            for _mi in _ep_month_idxs:
+                _ns_mi = _cat_index(_ns["cats"], _eb["cats"][_mi])
+                _ns_v  = _ns["Contract"][_ns_mi] if _ns_mi != -1 and _ns_mi < len(_ns["Contract"]) else 0
+                _eb_v  = _eb["Contract"][_mi]    if _mi < len(_eb["Contract"]) else 0
+                _ep_act.append(_eb_v / _ns_v * 100 if _ns_v != 0 else 0)
+                _ep_bud_ln.append(_bud_pct)  # flat target line
+
+            fig_pct = go.Figure()
+            fig_pct.add_trace(go.Scatter(
+                x=_ep_cats, y=_ep_act, name="EBIT % (YTD Actual)",
+                mode="lines+markers+text",
+                text=[f"{v:.1f}%" for v in _ep_act],
+                textposition="top center",
+                line=dict(color=PRIMARY, width=2),
+                marker=dict(size=7),
+            ))
+            fig_pct.add_trace(go.Scatter(
+                x=_ep_cats, y=_ep_bud_ln, name="EBIT % Budget Target",
+                mode="lines",
+                line=dict(color="#F59E0B", width=2, dash="dash"),
+            ))
+            if _nf_pct is not None:
+                _ep_nf = [safe_float(_epct["NetFees_Pct"][_cat_index(_epct["cats"], _eb["cats"][i])]) * 100
+                          for i in _ep_month_idxs]
+                fig_pct.add_trace(go.Scatter(
+                    x=_ep_cats, y=_ep_nf, name="Net Fees %",
+                    mode="lines+markers",
+                    line=dict(color="#10B981", width=2, dash="dot"),
+                    marker=dict(size=6),
+                ))
+            fig_pct.update_layout(
+                plot_bgcolor="white",
+                font=dict(family=_FONT, color=PRIMARY),
+                yaxis=dict(title="%", ticksuffix="%"),
+                xaxis=dict(type="category"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                margin=dict(t=60, b=20),
+                height=300,
+            )
+            st.plotly_chart(fig_pct, use_container_width=True, key=f"ebit_pct_{bu_name}_{sm}")
 
 
 def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
@@ -1282,7 +1561,7 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
         for idx_m, k in enumerate(keys_oi):
             val   = oi[k][oi_idx] if oi_idx != -1 else 0
             delta = val - prev_oi[k][prev_oi_idx] if prev_oi and prev_oi_idx != -1 else None
-            mcols[idx_m].metric(k, fmt_ktl(val), delta=fmt_ktl(delta) if delta is not None else None)
+            mcols[idx_m].metric(k, _mfmt(val), delta=_mfmt(delta) if delta is not None else None)
 
         # YTD OI (sum of monthly columns from Jan to current month)
         if oi_idx != -1:
@@ -1293,14 +1572,38 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             for idx_m, k in enumerate(keys_oi):
                 ytd_val = sum(oi[k][i] for i in range(_oi_base, oi_idx + 1) if i < len(oi[k]))
                 ytd_oi_total += ytd_val
-                ytd_cols[idx_m].metric(f"YTD {k}", fmt_ktl(ytd_val))
-            ytd_cols[4].metric("YTD Total", fmt_ktl(ytd_oi_total))
+                ytd_cols[idx_m].metric(f"YTD {k}", _mfmt(ytd_val))
+            ytd_cols[4].metric("YTD Total", _mfmt(ytd_oi_total))
 
         # Stacked OI chart (all BUs combined over time)
         st.plotly_chart(
             chart_stacked(oi, "", keys_oi, [BU_COLORS.get(k, "#888") for k in keys_oi]),
             use_container_width=True, key=f"oi_chart_total_{sm}",
         )
+
+        # ── Chart data table ─────────────────────────────────────────────────
+        with st.expander("📊 Chart Data (kTL)", expanded=False):
+            _oi_n = min(len(oi["cats"]), min(len(oi[k]) for k in keys_oi))
+            _oi_tbl = []
+            for _i in range(_oi_n):
+                _row = {"Period": oi["cats"][_i]}
+                _row_total = 0.0
+                for _k in keys_oi:
+                    _v = oi[_k][_i]
+                    _row[_k] = fmt_ktl(_v)
+                    _row_total += _v
+                _row["Total"] = fmt_ktl(_row_total)
+                _oi_tbl.append(_row)
+            _df_oi_tbl = pd.DataFrame(_oi_tbl)
+            st.dataframe(_df_oi_tbl, hide_index=True, use_container_width=True)
+            st.download_button(
+                "⬇ Export OI Data",
+                df_to_excel_bytes(_df_oi_tbl),
+                file_name=f"OI_Data_{sm.replace(' ', '_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"oi_chart_export_{sm}",
+            )
+
         bg_oi = filter_oi(data["oi_projects"], proj_sel, proj_text, cli_sel, cli_text)
     else:
         bg_oi    = [p for p in filter_oi(data["oi_projects"], proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
@@ -1311,8 +1614,8 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             delta_oi = total_oi - sum(p["value"] for p in p_bg_oi)
         st.metric(
             f"Total Order Intake ({len(bg_oi)} projs) (kTL)",
-            fmt_ktl(total_oi),
-            delta=fmt_ktl(delta_oi) if delta_oi is not None else None,
+            _mfmt(total_oi),
+            delta=_mfmt(delta_oi) if delta_oi is not None else None,
         )
         fig_bu_oi = chart_projects(bg_oi, "")
         if fig_bu_oi:
@@ -1425,6 +1728,45 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
             key=f"wip_export_{bu_name}_{sm}",
         )
 
+        # ── AG-Grid advanced view — hidden for now, re-enable by setting True ──────
+        if False and _AGGRID_AVAILABLE:
+            with st.expander("🔬 Advanced Table (AG-Grid)", expanded=False):
+                st.caption(
+                    "Sortable, filterable, groupable grid — independent of the table above. "
+                    "Use column headers to sort; right-click for filter options."
+                )
+                _ag_df = df_disp[cols_show].copy()
+                _gb    = GridOptionsBuilder.from_dataframe(_ag_df)
+                _gb.configure_default_column(
+                    resizable=True, sortable=True, filter=True,
+                    wrapText=False, autoHeight=False,
+                )
+                if "bu" in cols_show:
+                    _gb.configure_column("bu",  rowGroup=False, enableRowGroup=True)
+                if "client" in cols_show:
+                    _gb.configure_column("client", rowGroup=False, enableRowGroup=True)
+                _gb.configure_column(
+                    "WIP TL",
+                    type=["numericColumn"],
+                    cellStyle=JsCode(
+                        "function(params){ "
+                        "  if(params.value && params.value.startsWith('-'))"
+                        "    return {'color':'#EF4444','fontWeight':'600'};"
+                        "  return {'color':'#059669','fontWeight':'600'};"
+                        "}"
+                    ),
+                )
+                _gb.configure_selection("multiple", use_checkbox=False)
+                _gb.configure_grid_options(domLayout="autoHeight")
+                AgGrid(
+                    _ag_df,
+                    gridOptions=_gb.build(),
+                    allow_unsafe_jscode=True,
+                    use_container_width=True,
+                    height=min(600, max(300, len(_ag_df) * 30 + 60)),
+                    key=f"wip_aggrid_{bu_name}_{sm}",
+                )
+
         with st.expander("💱 WIP by Currency", expanded=False):
             cur_totals = {}
             for p in wip:
@@ -1500,7 +1842,9 @@ is_total = global_bu_view == "Company Total"
 _multi_year = len(set(sm.split()[1] for sm in selected_months if len(sm.split()) > 1)) > 1
 _sm_label   = lambda sm: sm if _multi_year else sm.split()[0]
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Net Sales", "EBIT", "Order Intake", "WIP", "Project History", "Scenarios"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab_exec = st.tabs([
+    "Net Sales", "EBIT", "Order Intake", "WIP", "Project History", "Scenarios", "Executive Summary"
+])
 
 # ── Tab 1: Net Sales ──────────────────────────────────────────────────────────
 with tab1:
@@ -1671,6 +2015,396 @@ with tab4:
 # Each fragment reruns independently on internal widget changes so the outer
 # st.tabs() selection is never reset when the user interacts with filters.
 
+
+@st.fragment
+def _render_exec_summary(loaded_data, selected_months, multi_year):
+    """Executive Summary — top-line KPIs, YTD vs target, BU snapshot, MoM delta."""
+    _sm_l    = lambda sm: sm if multi_year else sm.split()[0]
+    _sm_cur  = selected_months[-1]
+    _d       = loaded_data.get(_sm_cur)
+    if not _d:
+        st.warning("No data for the selected month.")
+        return
+
+    _abbr    = _sm_cur.split()[0][:3]
+    _ns      = _d["ns"]
+    _ebit    = _d["ebit"]
+    _oi      = _d["oi"]
+
+    _ns_i    = _cat_index(_ns["cats"],   _abbr)
+    _eb_i    = _cat_index(_ebit["cats"], _abbr)
+    _oi_i    = _cat_index(_oi["cats"],   _abbr)
+    _eoy_i   = _find_eoy_idx(_ns["cats"])
+    _eb_eoy  = _find_eoy_idx(_ebit["cats"])
+    _t_idx   = next((i for i, c in enumerate(_ns["cats"])   if "target" in str(c).lower()), -1)
+    _et_idx  = next((i for i, c in enumerate(_ebit["cats"]) if "target" in str(c).lower()), -1)
+
+    # ── Per-month values ──────────────────────────────────────────────────────
+    _ns_m    = monthly_val(_ns["Contract"],   _ns["cats"],   _ns_i)
+    _ebit_m  = monthly_val(_ebit["Contract"], _ebit["cats"], _eb_i)
+    _ns_ytd  = _ns["Contract"][_ns_i]           if _ns_i  != -1 and _ns_i  < len(_ns["Contract"])   else 0
+    _eb_ytd  = _ebit["Contract"][_eb_i]         if _eb_i  != -1 and _eb_i  < len(_ebit["Contract"])  else 0
+    _ns_eoy  = _ns["Contract"][_eoy_i]          if _eoy_i != -1 and _eoy_i < len(_ns["Contract"])    else 0
+    _eb_eoy  = _ebit["Contract"][_eb_eoy]       if _eb_eoy != -1 and _eb_eoy < len(_ebit["Contract"]) else 0
+    _ns_tgt  = _ns["Contract"][_t_idx]          if _t_idx != -1 and _t_idx  < len(_ns["Contract"])   else 0
+    _eb_tgt  = _ebit["Contract"][_et_idx]       if _et_idx != -1 and _et_idx < len(_ebit["Contract"]) else 0
+    _ebit_pct = _eb_ytd / _ns_ytd * 100         if _ns_ytd != 0 else 0
+    _bud_pct  = _eb_tgt / _ns_tgt * 100         if _ns_tgt != 0 else 0
+
+    _oi_base = O.get("MON_OI_Base", 2)
+    _oi_m    = _oi["ENG"][_oi_i] + _oi["MC"][_oi_i] + _oi["T&SI"][_oi_i] + _oi["NUC"][_oi_i] \
+               if _oi_i != -1 else 0
+    _oi_ytd  = sum(
+        sum(_oi[k][i] for i in range(_oi_base, (_oi_i + 1) if _oi_i != -1 else _oi_base)
+            if i < len(_oi[k]))
+        for k in ["ENG", "MC", "T&SI", "NUC"]
+    )
+
+    # MoM comparison
+    _prev_sm   = selected_months[-2] if len(selected_months) >= 2 else None
+    _prev_d    = loaded_data.get(_prev_sm) if _prev_sm else None
+    _prev_abbr = _prev_sm.split()[0][:3] if _prev_sm else None
+
+    def _prev_m(series_dict, series_key):
+        if not _prev_d or not _prev_abbr:
+            return None
+        _s = _prev_d[series_dict][series_key]
+        _c = _prev_d[series_dict]["cats"]
+        _i = _cat_index(_c, _prev_abbr)
+        return monthly_val(_s, _c, _i) if _i != -1 else None
+
+    _p_ns_m  = _prev_m("ns",   "Contract")
+    _p_eb_m  = _prev_m("ebit", "Contract")
+
+    st.markdown(f"### Executive Summary — {_sm_l(_sm_cur)}")
+    st.caption("Top-line figures for the current period. YTD values are cumulative; EOY is the December/year-end forecast.")
+    st.markdown("---")
+
+    # ── Section 1: NS KPIs ────────────────────────────────────────────────────
+    st.markdown("#### Net Sales (kTL)")
+    _nc1, _nc2, _nc3, _nc4 = st.columns(4)
+    _nc1.metric("NS — Monthly",  fmt_ktl(_ns_m),
+                delta=fmt_ktl(_ns_m - _p_ns_m) if _p_ns_m is not None else None)
+    _nc2.metric("NS — YTD",      fmt_ktl(_ns_ytd))
+    _nc3.metric("NS — EOY Fcst", fmt_ktl(_ns_eoy))
+    _nc4.metric("NS — Target",   fmt_ktl(_ns_tgt),
+                delta=f"{_ns_ytd / _ns_tgt:.0%} achieved" if _ns_tgt else None,
+                delta_color="off")
+
+    # ── Section 2: EBIT KPIs ─────────────────────────────────────────────────
+    st.markdown("#### EBIT (kTL)")
+    _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+    _ec1.metric("EBIT — Monthly",  fmt_ktl(_ebit_m),
+                delta=fmt_ktl(_ebit_m - _p_eb_m) if _p_eb_m is not None else None)
+    _ec2.metric("EBIT — YTD",      fmt_ktl(_eb_ytd))
+    _ec3.metric("EBIT — EOY Fcst", fmt_ktl(_eb_eoy))
+    _ec4.metric("EBIT — Target",   fmt_ktl(_eb_tgt),
+                delta=f"{_eb_ytd / _eb_tgt:.0%} achieved" if _eb_tgt else None,
+                delta_color="off")
+
+    # ── Section 3: EBIT % + OI ────────────────────────────────────────────────
+    st.markdown("#### Margins & Order Intake")
+    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+    _mc1.metric("EBIT % (YTD Actual)",   f"{_ebit_pct:.1f}%",
+                delta=f"{_ebit_pct - _bud_pct:+.1f} pp vs budget")
+    _mc2.metric("EBIT % (Budget target)", f"{_bud_pct:.1f}%")
+    _mc3.metric("OI — Monthly (kTL)",    fmt_ktl(_oi_m))
+    _mc4.metric("OI — YTD (kTL)",        fmt_ktl(_oi_ytd))
+
+    st.markdown("---")
+
+    # ── Section 4: YTD vs Target progress bars (full 6-tier) ────────────────────
+    st.markdown("#### YTD Progress vs 2026 Target")
+    st.caption("Cumulative YTD vs annual target. NS tiers are independent; EBIT tiers are cumulative additions.")
+
+    def _pbar(lbl, ytd_v, tgt_v):
+        _p = ytd_v / tgt_v if tgt_v > 0 else 0
+        _c1, _c2, _c3 = st.columns([4, 1, 1])
+        _c1.markdown(f"**{lbl}**")
+        _c1.progress(min(1.0, max(0.0, _p)))
+        _c2.metric("YTD (kTL)", fmt_ktl(ytd_v))
+        _c3.metric("Target (kTL)", fmt_ktl(tgt_v), delta=f"{_p:.0%}")
+
+    def _nv(k):
+        return _ns[k][_ns_i]  if _ns_i  != -1 and _ns_i  < len(_ns[k])  else 0
+    def _nt(k):
+        return _ns[k][_t_idx] if _t_idx != -1 and _t_idx < len(_ns[k])  else 0
+    def _ev(k):
+        return _ebit[k][_eb_i]   if _eb_i   != -1 and _eb_i   < len(_ebit[k])  else 0
+    def _et(k):
+        return _ebit[k][_et_idx] if _et_idx != -1 and _et_idx < len(_ebit[k])  else 0
+
+    st.markdown("**Net Sales**")
+    _pbar("Contract",                       _nv("Contract"),                                        _nt("Contract"))
+    _pbar("Weighted Proposals (WP)",        _nv("WP"),                                              _nt("WP"))
+    _pbar("Full Outlook (Contract+WP+WO)",  sum(_nv(k) for k in ["Contract","WP","WO"]),            sum(_nt(k) for k in ["Contract","WP","WO"]))
+    st.markdown("**EBIT**")
+    _pbar("Contract",                       _ev("Contract"),       _et("Contract"))
+    _pbar("Contract + Weighted Proposals",  _ev("Contract+WP"),    _et("Contract+WP"))
+    _pbar("Full Outlook (Contract+WP+WO)",  _ev("Contract+WP+WO"), _et("Contract+WP+WO"))
+
+    st.markdown("---")
+
+    # ── Section 5: BU Snapshot table ─────────────────────────────────────────
+    st.markdown("#### Business Unit Snapshot")
+    _bu_rows = []
+    for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+        _bd_ns   = _d["bu_ns"][_bu]
+        _bd_eb   = _d["bu_ebit"][_bu]
+        _bns_i   = _cat_index(_bd_ns["cats"], _abbr)
+        _beb_i   = _cat_index(_bd_eb["cats"], _abbr)
+        _bns_tgt_i = _BU_TARGET_IDX
+        _bns_m   = sum(monthly_val(_bd_ns[t], _bd_ns["cats"], _bns_i) for t in ["Order", "Offer", "Opp"]) if _bns_i != -1 else 0
+        _bns_ytd = sum(_bd_ns[t][_bns_i] for t in ["Order", "Offer", "Opp"] if _bns_i != -1 and _bns_i < len(_bd_ns[t])) if _bns_i != -1 else 0
+        _bns_tgt = sum(_bd_ns[t][_bns_tgt_i] for t in ["Order", "Offer", "Opp"] if _bns_tgt_i < len(_bd_ns[t]))
+        _beb_m   = monthly_val(_bd_eb["Total"], _bd_eb["cats"], _beb_i) if _beb_i != -1 else 0
+        _beb_ytd = _bd_eb["Total"][_beb_i] if _beb_i != -1 and _beb_i < len(_bd_eb["Total"]) else 0
+        _bns_pct = _bns_ytd / _bns_tgt * 100 if _bns_tgt != 0 else 0
+        _bu_rows.append({
+            "BU":                _bu,
+            "NS Monthly (kTL)":  fmt_ktl(_bns_m),
+            "NS YTD (kTL)":      fmt_ktl(_bns_ytd),
+            "NS Target (kTL)":   fmt_ktl(_bns_tgt),
+            "vs Target":         f"{_bns_pct:.0f}%",
+            "EBIT Monthly (kTL)": fmt_ktl(_beb_m),
+            "EBIT YTD (kTL)":   fmt_ktl(_beb_ytd),
+        })
+    st.dataframe(pd.DataFrame(_bu_rows), hide_index=True, use_container_width=True)
+    st.download_button(
+        "⬇ Export Exec Summary",
+        df_to_excel_bytes(pd.DataFrame(_bu_rows)),
+        file_name=f"ExecSummary_{_sm_cur.replace(' ', '_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="exec_export",
+    )
+
+    # ── Section 6: MoM / YoY delta (if two months loaded) ────────────────────
+    if _prev_sm and _prev_d:
+        st.markdown("---")
+        _is_yoy  = _sm_cur.split()[1] != _prev_sm.split()[1]
+        _cmp_tag = "YoY" if _is_yoy else "MoM"
+        st.markdown(f"#### {_cmp_tag} Δ — {_sm_l(_prev_sm)} → {_sm_l(_sm_cur)}")
+
+        _p_ns_ytd  = _prev_d["ns"]["Contract"][_cat_index(_prev_d["ns"]["cats"], _prev_abbr)] \
+                     if _cat_index(_prev_d["ns"]["cats"], _prev_abbr) != -1 else 0
+        _p_eb_ytd  = _prev_d["ebit"]["Contract"][_cat_index(_prev_d["ebit"]["cats"], _prev_abbr)] \
+                     if _cat_index(_prev_d["ebit"]["cats"], _prev_abbr) != -1 else 0
+        _d1, _d2, _d3, _d4 = st.columns(4)
+        _d1.metric("NS Monthly Δ", fmt_ktl(_ns_m - (_p_ns_m or 0)),
+                   delta=f"{(_ns_m - (_p_ns_m or 0)) / abs(_p_ns_m) * 100:+.1f}%" if _p_ns_m else None)
+        _d2.metric("NS YTD Δ",     fmt_ktl(_ns_ytd - _p_ns_ytd),
+                   delta=f"{(_ns_ytd - _p_ns_ytd) / abs(_p_ns_ytd) * 100:+.1f}%" if _p_ns_ytd else None)
+        _d3.metric("EBIT Monthly Δ", fmt_ktl(_ebit_m - (_p_eb_m or 0)),
+                   delta=f"{(_ebit_m - (_p_eb_m or 0)) / abs(_p_eb_m) * 100:+.1f}%" if _p_eb_m else None)
+        _d4.metric("EBIT YTD Δ",   fmt_ktl(_eb_ytd - _p_eb_ytd),
+                   delta=f"{(_eb_ytd - _p_eb_ytd) / abs(_p_eb_ytd) * 100:+.1f}%" if _p_eb_ytd else None)
+
+    # ── Section 7: Rolling 12-Month Net Sales ────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Rolling 12-Month Net Sales")
+    st.caption(
+        "Monthly NS over the trailing 12 months. "
+        "Current-year months use their own file; previous-year months use the December file (fully closed)."
+    )
+
+    _r12_view = st.radio(
+        "Breakdown", ["Company Total", "By Business Unit", "By Project", "By Client"],
+        horizontal=True, key="exec_r12_view",
+    )
+
+    # ── Build trailing-12 month slots ────────────────────────────────────────
+    _cur_month_name = _sm_cur.split()[0]
+    _cur_year       = int(_sm_cur.split()[1])
+    _cur_month_num  = MONTH_ORDER.index(_cur_month_name) + 1
+
+    _trailing_slots = []
+    for _offset in range(11, -1, -1):
+        _mo, _yr = _cur_month_num - _offset, _cur_year
+        while _mo <= 0:
+            _mo += 12; _yr -= 1
+        _trailing_slots.append((_yr, _mo, MONTH_ORDER[_mo - 1]))
+
+    _avail_sorted = sorted(
+        EXCEL_FILES.keys(),
+        key=lambda x: (int(x.split()[1]), MONTH_ORDER.index(x.split()[0])),
+    )
+    _r12_labels = [f"{mn[:3]} {str(yr)[2:]}" for yr, _, mn in _trailing_slots]
+
+    def _file_for_slot(yr, mn_name):
+        key = f"{mn_name} {yr}"
+        if key in EXCEL_FILES:
+            return key
+        dec = f"December {yr}"
+        if dec in EXCEL_FILES:
+            return dec
+        yf = [k for k in _avail_sorted if k.split()[1] == str(yr)]
+        return yf[-1] if yf else None
+
+    def _load_slot(yr, mn_name):
+        fk = _file_for_slot(yr, mn_name)
+        if not fk:
+            return None, None
+        fp = EXCEL_FILES[fk]
+        return load_month(str(fp)) if fp and fp.exists() else None, fk
+
+    # ── Shared layout helper ──────────────────────────────────────────────────
+    _r12_cur_sfx = str(_cur_year)[2:]
+
+    def _r12_bar_chart(fig, key):
+        fig.update_layout(
+            plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
+            yaxis_title="kTL", xaxis=dict(type="category"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(t=60, b=20), height=340,
+        )
+        st.plotly_chart(fig, use_container_width=True, key=key)
+        st.caption(f"Current year ({_cur_year}) bars are highlighted; prior year in grey.")
+
+    # ── Company Total ─────────────────────────────────────────────────────────
+    if _r12_view == "Company Total":
+        _r12_vals = []
+        for _yr_s, _, _mn_s in _trailing_slots:
+            _d_slot, _ = _load_slot(_yr_s, _mn_s)
+            if _d_slot:
+                _i = _cat_index(_d_slot["ns"]["cats"], _mn_s[:3])
+                _r12_vals.append(monthly_val(_d_slot["ns"]["Contract"], _d_slot["ns"]["cats"], _i) if _i != -1 else 0)
+            else:
+                _r12_vals.append(0)
+
+        if any(v != 0 for v in _r12_vals):
+            _lf = [human_k(v) for v in _r12_vals]
+            _fig_r12 = go.Figure(go.Bar(
+                x=_r12_labels, y=_r12_vals, text=_lf, textposition="outside",
+                cliponaxis=False,
+                marker_color=[PRIMARY if lbl.endswith(_r12_cur_sfx) else "#94A3B8" for lbl in _r12_labels],
+                hovertemplate="%{x}: %{customdata} kTL<extra></extra>", customdata=_lf,
+            ))
+            _r12_bar_chart(_fig_r12, "exec_r12_total")
+            _mom = [None] + [_r12_vals[i] - _r12_vals[i-1] for i in range(1, len(_r12_vals))]
+            _df_r12 = pd.DataFrame({
+                "Period": _r12_labels,
+                "NS Contract (kTL)": [fmt_ktl(v) for v in _r12_vals],
+                "MoM Δ": [f"+{human_k(d)}" if d is not None and d >= 0 else human_k(d) if d is not None else "—" for d in _mom],
+            })
+            st.dataframe(_df_r12, hide_index=True, use_container_width=True)
+        else:
+            st.info("No NS data found for the trailing 12 months.")
+
+    # ── By Business Unit ──────────────────────────────────────────────────────
+    elif _r12_view == "By Business Unit":
+        _bu_series: dict[str, list] = {bu: [] for bu in ["ENG", "MC", "T&SI", "NUC"]}
+        for _yr_s, _, _mn_s in _trailing_slots:
+            _d_slot, _ = _load_slot(_yr_s, _mn_s)
+            for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                if _d_slot:
+                    _bd = _d_slot["bu_ns"][_bu]
+                    _bi = _cat_index(_bd["cats"], _mn_s[:3])
+                    _v  = sum(monthly_val(_bd[t], _bd["cats"], _bi) for t in ["Order","Offer","Opp"]) if _bi != -1 else 0
+                else:
+                    _v = 0
+                _bu_series[_bu].append(_v)
+
+        if any(any(v != 0 for v in vals) for vals in _bu_series.values()):
+            _fig_bu = go.Figure()
+            for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                _fig_bu.add_trace(go.Bar(
+                    x=_r12_labels, y=_bu_series[_bu], name=_bu,
+                    marker_color=BU_COLORS.get(_bu, "#888"),
+                    hovertemplate=f"<b>{_bu}</b> %{{x}}: %{{y:,.0f}} kTL<extra></extra>",
+                ))
+            _fig_bu.update_layout(barmode="stack")
+            _r12_bar_chart(_fig_bu, "exec_r12_bu")
+
+            _tbl_rows = []
+            for i, lbl in enumerate(_r12_labels):
+                _row = {"Period": lbl}
+                _tot = 0
+                for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                    _row[f"{_bu} (kTL)"] = fmt_ktl(_bu_series[_bu][i])
+                    _tot += _bu_series[_bu][i]
+                _row["Total (kTL)"] = fmt_ktl(_tot)
+                _tbl_rows.append(_row)
+            st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info("No BU NS data found for the trailing 12 months.")
+
+    # ── By Project or By Client ───────────────────────────────────────────────
+    else:
+        _is_proj = (_r12_view == "By Project")
+        _ref_fk  = _file_for_slot(_cur_year, _cur_month_name)
+        _ref_fp  = EXCEL_FILES.get(_ref_fk) if _ref_fk else None
+        _ref_md  = load_margin_data(str(_ref_fp)) if _ref_fp and _ref_fp.exists() else None
+
+        if not _ref_md:
+            st.info("Ext. Prod. data unavailable — cannot build project/client breakdown.")
+        else:
+            if _is_proj:
+                _opts = sorted({info["name"] for info in _ref_md["projects"].values()})
+                _sel  = st.multiselect("Select Projects (max 5)", _opts, max_selections=5, key="exec_r12_projs")
+            else:
+                _opts = sorted({info["client"] for info in _ref_md["projects"].values() if info.get("client")})
+                _sel  = st.multiselect("Select Clients (max 5)",  _opts, max_selections=5, key="exec_r12_clis")
+
+            if not _sel:
+                st.info("Select at least one option to display.")
+            else:
+                _series: dict[str, list] = {s: [] for s in _sel}
+                for _yr_s, _, _mn_s in _trailing_slots:
+                    _fk_s = _file_for_slot(_yr_s, _mn_s)
+                    _fp_s = EXCEL_FILES.get(_fk_s) if _fk_s else None
+                    _md_s = load_margin_data(str(_fp_s)) if _fp_s and _fp_s.exists() else None
+                    _month_lbl = f"{_mn_s} {_yr_s}"   # e.g. "July 2025"
+                    for _sel_item in _sel:
+                        _v = 0
+                        if _md_s:
+                            for _pi in _md_s["projects"].values():
+                                _match = (_pi["name"] == _sel_item) if _is_proj else (_pi.get("client") == _sel_item)
+                                if _match:
+                                    _gf = _pi.get("type_data", {}).get("GROSS FEES", {})
+                                    _v += _gf.get(_month_lbl, 0)
+                        _series[_sel_item].append(_v)
+
+                _lcolors = [PRIMARY, "#10B981", "#F59E0B", "#8B5CF6", "#EC4899"]
+                _fig_sel = go.Figure()
+                for _ci, _sel_item in enumerate(_sel):
+                    _vals = _series[_sel_item]
+                    _lbf  = [human_tl(v) for v in _vals]
+                    _fig_sel.add_trace(go.Scatter(
+                        x=_r12_labels, y=_vals, name=_sel_item[:30],
+                        mode="lines+markers+text",
+                        text=_lbf, textposition="top center",
+                        textfont=dict(size=9),
+                        line=dict(color=_lcolors[_ci % len(_lcolors)], width=2),
+                        marker=dict(size=7),
+                        hovertemplate=f"<b>{_sel_item}</b> %{{x}}: %{{customdata}}<extra></extra>",
+                        customdata=_lbf,
+                    ))
+                _fig_sel.update_layout(
+                    plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
+                    yaxis_title="TL",
+                    xaxis=dict(type="category", tickangle=-45),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    margin=dict(t=60, b=20), height=360,
+                )
+                st.plotly_chart(_fig_sel, use_container_width=True, key="exec_r12_sel")
+
+                _tbl_rows = []
+                for i, lbl in enumerate(_r12_labels):
+                    _row = {"Period": lbl}
+                    for _sel_item in _sel:
+                        _row[_sel_item[:25]] = human_tl(_series[_sel_item][i])
+                    _tbl_rows.append(_row)
+                _df_sel = pd.DataFrame(_tbl_rows)
+                st.dataframe(_df_sel, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "⬇ Export to Excel",
+                    df_to_excel_bytes(_df_sel),
+                    file_name=f"NS_12M_{'Project' if _is_proj else 'Client'}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="exec_r12_export",
+                )
+
+
 @st.fragment
 def _render_project_history(loaded_data, selected_months, global_bu_view, multi_year):
     st.markdown("### Project History")
@@ -1682,31 +2416,44 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
     with st.spinner("Loading margin data…"):
         margin_data = merge_margin_data(selected_months)
 
+    # Per-file data for breakdown comparison (current vs previous month file)
+    _all_avail_sm  = sorted(EXCEL_FILES.keys(),
+                            key=lambda x: (x.split()[1], MONTH_ORDER.index(x.split()[0])))
+    _cur_sm_ph     = selected_months[-1]
+    _cur_pos_ph    = next((i for i, x in enumerate(_all_avail_sm) if x == _cur_sm_ph), -1)
+    _prev_sm_ph    = _all_avail_sm[_cur_pos_ph - 1] if _cur_pos_ph > 0 else None
+    _cur_fp_ph     = EXCEL_FILES.get(_cur_sm_ph)
+    _prev_fp_ph    = EXCEL_FILES.get(_prev_sm_ph) if _prev_sm_ph else None
+    _cur_file_md   = load_margin_data(str(_cur_fp_ph))  if _cur_fp_ph  and _cur_fp_ph.exists()  else None
+    _prev_file_md  = load_margin_data(str(_prev_fp_ph)) if _prev_fp_ph and _prev_fp_ph.exists() else None
+
     if margin_data and margin_data.get("projects"):
         projects    = margin_data["projects"]
         month_cols  = margin_data["month_cols"]
         bl_year     = margin_data.get("bl_year")
         bo_year     = margin_data.get("bo_year")
 
-        st.markdown("#### Project Filters")
-        pf1, pf2 = st.columns(2)
-        with pf1:
+        # ── Filters ───────────────────────────────────────────────────────────
+        _all_ph_clients = sorted(
+            {info["client"] for info in projects.values()
+             if info["client"] and info["client"].lower() not in ("", "nan")}
+        )
+        _fc1, _fc2 = st.columns(2)
+        with _fc1:
             ph_bu_filter = st.multiselect(
-                "Filter by Business Unit",
+                "Business Unit",
                 ["ENG", "MC", "T&SI", "NUC"],
                 default=["ENG", "MC", "T&SI", "NUC"],
                 key="ph_bu_filter",
             )
-        with pf2:
-            _all_ph_clients = sorted(
-                {info["client"] for info in projects.values()
-                 if info["client"] and info["client"].lower() not in ("", "nan")}
+        with _fc2:
+            # Multiselect with built-in search — cleaner than the 2-step text+select pattern
+            ph_cli_filter = st.multiselect(
+                "Client (type to search)",
+                _all_ph_clients,
+                key="ph_cli_filter",
+                help="Leave empty to show all clients. Select one or more to filter.",
             )
-            ph_cli_text = st.text_input(
-                "Search Client", placeholder="Filter by client…", key="ph_cli_text",
-            )
-            _cli_opts = [c for c in _all_ph_clients if ph_cli_text.lower() in c.lower()] if ph_cli_text else _all_ph_clients
-            ph_cli_filter = st.multiselect("Filter by Client", _cli_opts, key="ph_cli_filter")
 
         filtered_projects = {
             key: info for key, info in projects.items()
@@ -1714,8 +2461,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
             and (not ph_cli_filter or info["client"] in ph_cli_filter)
         }
 
-        # Build display labels: "Project Name" or "Project Name (CURRENCY)" when the same name
-        # appears under different currencies (different contract lines).
+        # Build display labels: "Project Name" or "Project Name (CURRENCY)" for duplicate names
         _name_counts: dict[str, int] = {}
         for info in filtered_projects.values():
             _name_counts[info["name"]] = _name_counts.get(info["name"], 0) + 1
@@ -1724,25 +2470,56 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
             name = info["name"]
             return f"{name} ({info['currency']})" if _name_counts.get(name, 0) > 1 else name
 
-        # Map display_label → internal key for selectbox
         label_to_key  = {_display_label(v): k for k, v in filtered_projects.items()}
         all_labels    = sorted(label_to_key.keys())
 
+        # ── Project selector + compare controls ───────────────────────────────
         sel_label = None
-        if not all_labels:
-            st.warning("No projects found for the selected Business Units.")
-        else:
-            ph_proj_text = st.text_input(
-                "🔍 Search Project", placeholder="Type to narrow the list…", key="ph_proj_text",
-                help="Type any part of the project name to filter the dropdown below.",
-            )
-            visible_labels = (
-                [l for l in all_labels if ph_proj_text.lower() in l.lower()]
-                if ph_proj_text else all_labels
-            )
-            sel_label = st.selectbox("Select Project", visible_labels if visible_labels else all_labels, key="margin_proj")
+        _compare_proj_keys: list[str] = []
+        _compare_cli_keys:  list[str] = []
 
-        sel_proj  = label_to_key.get(sel_label) if sel_label else None
+        if not all_labels:
+            st.warning("No projects found for the selected filters.")
+        else:
+            _ps1, _ps2 = st.columns([3, 1])
+            with _ps1:
+                ph_proj_text = st.text_input(
+                    "Search Project", placeholder="Type to narrow the list…", key="ph_proj_text",
+                )
+                visible_labels = (
+                    [l for l in all_labels if ph_proj_text.lower() in l.lower()]
+                    if ph_proj_text else all_labels
+                )
+                sel_label = st.selectbox(
+                    "Select Project", visible_labels if visible_labels else all_labels,
+                    key="margin_proj",
+                )
+            with _ps2:
+                ph_compare_on = st.checkbox("Compare projects", key="ph_compare_on")
+                ph_compare_cli = st.checkbox("Compare clients", key="ph_compare_cli")
+
+            if ph_compare_on:
+                _other_labels = [l for l in all_labels if l != sel_label]
+                _compare_raw = st.multiselect(
+                    "Add up to 2 more projects (chart only)",
+                    _other_labels, max_selections=2, key="ph_compare_ms",
+                    help="Lines added to the production chart. Detail table stays for the primary project.",
+                )
+                _compare_proj_keys = [label_to_key[l] for l in _compare_raw if l in label_to_key]
+
+            if ph_compare_cli:
+                _other_clients = [c for c in _all_ph_clients
+                                  if sel_label and c != filtered_projects.get(label_to_key.get(sel_label, ""), {}).get("client")]
+                _compare_cli_raw = st.multiselect(
+                    "Compare with clients (aggregated GROSS FEES, chart only)",
+                    _other_clients, max_selections=2, key="ph_compare_cli_ms",
+                    help="Each selected client's total GROSS FEES production is plotted as a line.",
+                )
+                _compare_cli_keys = _compare_cli_raw
+
+        sel_proj           = label_to_key.get(sel_label) if sel_label else None
+        _compare_proj_keys = _compare_proj_keys if st.session_state.get("ph_compare_on") else []
+        _compare_cli_keys  = _compare_cli_keys  if st.session_state.get("ph_compare_cli") else []
 
         if sel_proj and sel_proj in filtered_projects:
             proj_info = filtered_projects[sel_proj]
@@ -1760,11 +2537,11 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
             )
             if not _available_types_sorted:
                 _available_types_sorted = ["GROSS FEES"]
-            # "All Types" aggregates every cost type into one combined series
-            _ALLTYPE_LABEL = "All Types (Combined)"
+            # "Margin" aggregates every cost type into one net margin series
+            _ALLTYPE_LABEL = "Margin (All Types)"
             _dropdown_options = [_ALLTYPE_LABEL] + _available_types_sorted
 
-            ph_view_col, ph_type_col = st.columns([2, 2])
+            ph_view_col, ph_type_col, ph_flip_col = st.columns([2, 2, 1])
             with ph_view_col:
                 ph_view = st.radio(
                     "View",
@@ -1779,11 +2556,20 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     index=0,
                     key="ph_cost_type",
                     help=(
-                        "'All Types (Combined)' sums every cost type. "
-                        "GROSS FEES is the main project total. "
-                        "Other types are cost components."
+                        "'Margin (All Types)' sums every cost type to show net project margin. "
+                        "GROSS FEES is the main project revenue. "
+                        "Other types are cost components (typically negative)."
                     ),
                 ) if ph_view == "Production (Ext. Prod.)" else "GROSS FEES"
+            with ph_flip_col:
+                ph_flip_neg = st.checkbox(
+                    "Show costs upward",
+                    key="ph_flip_neg",
+                    help=(
+                        "Multiplies negative values by −1 so cost-type bars point upward. "
+                        "Only affects the chart; raw data below is unchanged."
+                    ),
+                ) if ph_view == "Production (Ext. Prod.)" else False
 
             # Build the active data: aggregate all types or pick the selected one
             if ph_cost_type == _ALLTYPE_LABEL:
@@ -1797,28 +2583,98 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
             # Cost type breakdown summary (always visible when multiple types exist)
             if len(_available_types_sorted) > 1 and ph_view == "Production (Ext. Prod.)":
                 with st.expander("📊 All Cost Types — Breakdown Summary", expanded=False):
-                    _month_labels = sorted(
-                        [m["label"] for m in margin_data.get("month_cols", [])],
-                        key=lambda _l: next(
-                            (m["sort_key"] for m in margin_data.get("month_cols", []) if m["label"] == _l),
-                            "9999"
-                        ),
-                    )
+                    # Resolve current month label (e.g. "February 2026") from the current file
+                    _cur_month_name_bk = _cur_sm_ph.split()[0]
+                    _cur_month_lbl_bk  = None
+                    if _cur_file_md:
+                        _cur_month_lbl_bk = next(
+                            (m["label"] for m in (_cur_file_md.get("month_cols") or [])
+                             if m["label"].lower().startswith(_cur_month_name_bk.lower())),
+                            None,
+                        )
+
+                    _cur_bo_yr  = (_cur_file_md.get("bo_year")  if _cur_file_md  else None) or "Year"
+                    _prev_bo_yr = (_prev_file_md.get("bo_year") if _prev_file_md else None) or "Year"
+                    _has_prev   = _prev_file_md is not None and _prev_sm_ph is not None
+
+                    # Column headers
+                    _col_cur_m  = f"{_cur_month_name_bk} Actual"
+                    _col_prev_m = f"{_cur_month_name_bk} (Prev File — {_prev_sm_ph.split()[0] if _prev_sm_ph else '—'})"
+                    _col_cur_bo = f"End {_cur_bo_yr} Forecast (Current)"
+                    _col_prv_bo = f"End {_prev_bo_yr} Forecast (Prev)"
+
                     _breakdown_rows = []
                     for _ct in _available_types_sorted:
-                        _td   = _all_type_data.get(_ct, {})
-                        _tot  = sum(_td.get(_l, 0) for _l in _month_labels)
-                        _bl_l = next((k for k in _td if k.startswith("BL (")), None)
-                        _bo_l = next((k for k in _td if k.startswith("BO (")), None)
-                        _breakdown_rows.append({
-                            "Cost Type":        _ct,
-                            "Monthly Total (TL)": human_tl(_tot),
-                            "BL":               human_tl(_td.get(_bl_l, 0)) if _bl_l else "—",
-                            "BO (End Year)":    human_tl(_td.get(_bo_l, 0)) if _bo_l else "—",
-                        })
-                    st.dataframe(
-                        pd.DataFrame(_breakdown_rows),
-                        hide_index=True, use_container_width=True,
+                        # Type-level data from current file
+                        _td_cur = {}
+                        if _cur_file_md and sel_proj in _cur_file_md.get("projects", {}):
+                            _td_cur = _cur_file_md["projects"][sel_proj].get("type_data", {}).get(_ct, {})
+
+                        # Type-level data from previous file
+                        _td_prv = {}
+                        if _has_prev and sel_proj in _prev_file_md.get("projects", {}):
+                            _td_prv = _prev_file_md["projects"][sel_proj].get("type_data", {}).get(_ct, {})
+
+                        # Current month value from current file (actual)
+                        _cur_m_val  = _td_cur.get(_cur_month_lbl_bk, 0) if _cur_month_lbl_bk else 0
+                        # Same month's value as recorded in the previous file (projected)
+                        _prv_m_val  = _td_prv.get(_cur_month_lbl_bk, 0) if (_cur_month_lbl_bk and _td_prv) else None
+
+                        # End-of-year forecast from each file
+                        _cur_bo_key = next((k for k in _td_cur if k.startswith("BO (")), None)
+                        _prv_bo_key = next((k for k in _td_prv if k.startswith("BO (")), None)
+                        _cur_bo_val = _td_cur.get(_cur_bo_key, 0) if _cur_bo_key else 0
+                        _prv_bo_val = _td_prv.get(_prv_bo_key, 0) if _prv_bo_key else None
+
+                        # Month delta (Actual − Projected): positive = beat forecast
+                        _m_delta = (_cur_m_val - _prv_m_val) if (_prv_m_val is not None) else None
+                        # EoY delta (current forecast − previous forecast)
+                        _bo_delta = (_cur_bo_val - _prv_bo_val) \
+                                    if (_prv_bo_val is not None and _cur_bo_key) else None
+
+                        def _delta_str(d):
+                            if d is None:
+                                return "—"
+                            sign = "+" if d >= 0 else ""
+                            return f"{sign}{human_tl(d)}"
+
+                        _row = {
+                            "Cost Type":  _ct,
+                            _col_cur_m:   human_tl(_cur_m_val),
+                            _col_cur_bo:  human_tl(_cur_bo_val) if _cur_bo_key else "—",
+                        }
+                        if _has_prev:
+                            _row[_col_prev_m]       = human_tl(_prv_m_val) if _prv_m_val is not None else "—"
+                            _row["Δ Month"]          = _delta_str(_m_delta)
+                            _row[_col_prv_bo]        = human_tl(_prv_bo_val) if (_prv_bo_key and _prv_bo_val is not None) else "—"
+                            _row["Δ EoY Forecast"]   = _delta_str(_bo_delta)
+                        _breakdown_rows.append(_row)
+
+                    # Reorder columns: Cost Type | Actual | Projected | Δ Month | EoY Cur | EoY Prev | Δ EoY
+                    _cols_order = ["Cost Type", _col_cur_m, _col_cur_bo]
+                    if _has_prev:
+                        _cols_order = [
+                            "Cost Type",
+                            _col_cur_m, _col_prev_m, "Δ Month",
+                            _col_cur_bo, _col_prv_bo, "Δ EoY Forecast",
+                        ]
+                    _df_bkdn = pd.DataFrame(_breakdown_rows)[_cols_order]
+
+                    if _has_prev:
+                        st.caption(
+                            f"Actual = value from **{_cur_sm_ph}** file. "
+                            f"Prev File = same month as projected in **{_prev_sm_ph}** file. "
+                            f"EoY Forecast = end-of-year outlook from each respective file."
+                        )
+                    else:
+                        st.caption(f"Values from **{_cur_sm_ph}** file. Load an additional month to see prior-file comparison.")
+                    st.dataframe(_df_bkdn, hide_index=True, use_container_width=True)
+                    st.download_button(
+                        "⬇ Export Breakdown",
+                        df_to_excel_bytes(_df_bkdn),
+                        file_name=f"Breakdown_{proj_info['code']}_{_cur_sm_ph.replace(' ', '_')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"bkdn_export_{sel_proj}",
                     )
 
             # ── Build WIP history (needed by both views for combined table) ────
@@ -1850,33 +2706,129 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                 bl_val   = _active_margin_data.get(bl_label, 0)
                 bo_val   = _active_margin_data.get(bo_label, 0)
 
-                if margin_rows:
-                    df_margin          = pd.DataFrame(margin_rows)
-                    df_margin["Label"] = df_margin["Production (TL)"].apply(human_tl)
+                # Column and axis label: "Margin (TL)" when All Types combined, else "Production (TL)"
+                _val_col   = "Margin (TL)" if ph_cost_type == _ALLTYPE_LABEL else "Production (TL)"
+                _axis_lbl  = "Margin (TL)" if ph_cost_type == _ALLTYPE_LABEL else "Production (TL)"
 
+                def _apply_flip(vals):
+                    """Flip negatives to positive when 'Show costs upward' is on."""
+                    if not ph_flip_neg:
+                        return list(vals)
+                    return [-v if v < 0 else v for v in vals]
+
+                if margin_rows:
+                    df_margin = pd.DataFrame([
+                        {"Period": r["Period"], _val_col: r["Production (TL)"]}
+                        for r in margin_rows
+                    ])
+                    df_margin["Label"] = df_margin[_val_col].apply(human_tl)
+
+                    _flip_suffix = " ↑ costs shown as positive" if ph_flip_neg else ""
                     _type_suffix = (
-                        " [All Types]" if ph_cost_type == _ALLTYPE_LABEL
+                        " [All Types — Margin]" if ph_cost_type == _ALLTYPE_LABEL
                         else (f" [{ph_cost_type}]" if ph_cost_type != "GROSS FEES" else "")
                     )
-                    fig_margin = px.line(
-                        df_margin, x="Period", y="Production (TL)", markers=True,
-                        title=f"{sel_label}{_type_suffix} — Monthly Production (TL)",
-                        text="Label",
-                    )
-                    fig_margin.update_traces(
-                        textposition="top center",
-                        line=dict(color=PRIMARY, width=2),
-                        marker=dict(size=8),
-                    )
+                    _period_list    = [m["label"] for m in month_cols_sorted]
+                    _txt_size       = 9 if len(_period_list) > 12 else 10
+                    _line_colors    = [PRIMARY, "#10B981", "#F59E0B"]
+
+                    if not _compare_proj_keys:
+                        # Single-project line chart
+                        _chart_y    = _apply_flip(df_margin[_val_col])
+                        _chart_lbl  = [human_tl(v) for v in _chart_y]
+                        fig_margin  = go.Figure()
+                        fig_margin.add_trace(go.Scatter(
+                            x=df_margin["Period"], y=_chart_y,
+                            name=sel_label,
+                            mode="lines+markers+text",
+                            text=_chart_lbl,
+                            textposition="top center",
+                            textfont=dict(size=_txt_size, color=PRIMARY),
+                            line=dict(color=PRIMARY, width=2),
+                            marker=dict(size=8),
+                            hovertemplate="%{x}: %{customdata}<extra></extra>",
+                            customdata=_chart_lbl,
+                        ))
+                    else:
+                        # Multi-project line chart
+                        fig_margin  = go.Figure()
+                        _all_cmp_keys = [sel_proj] + _compare_proj_keys
+                        _all_cmp_lbls = [sel_label] + [
+                            _display_label(filtered_projects[k]) for k in _compare_proj_keys
+                            if k in filtered_projects
+                        ]
+                        for _pi, (_pk, _plbl) in enumerate(zip(_all_cmp_keys, _all_cmp_lbls)):
+                            if _pk not in filtered_projects:
+                                continue
+                            _pinfo = filtered_projects[_pk]
+                            if ph_cost_type == _ALLTYPE_LABEL:
+                                _p_data: dict = {}
+                                for _ptd in _pinfo.get("type_data", {}).values():
+                                    for _pk2, _pv in _ptd.items():
+                                        _p_data[_pk2] = _p_data.get(_pk2, 0) + _pv
+                            else:
+                                _p_data = _pinfo.get("type_data", {}).get(
+                                    ph_cost_type, _pinfo["margin_data"]
+                                )
+                            _yvals = _apply_flip([_p_data.get(p, 0) for p in _period_list])
+                            _ylbls = [human_tl(v) for v in _yvals]
+                            fig_margin.add_trace(go.Scatter(
+                                x=_period_list, y=_yvals,
+                                name=_plbl,
+                                mode="lines+markers+text",
+                                text=_ylbls,
+                                textposition="top center",
+                                textfont=dict(size=_txt_size, color=_line_colors[_pi % len(_line_colors)]),
+                                line=dict(color=_line_colors[_pi % len(_line_colors)], width=2),
+                                marker=dict(size=7),
+                                hovertemplate=f"<b>{_plbl}</b> — %{{x}}: %{{customdata}}<extra></extra>",
+                                customdata=_ylbls,
+                            ))
+
+                    # ── Client comparison traces ──────────────────────────────
+                    if _compare_cli_keys:
+                        _cli_colors_extra = ["#8B5CF6", "#EC4899"]
+                        for _ci, _cli in enumerate(_compare_cli_keys):
+                            # Aggregate GROSS FEES for all projects of this client
+                            _cli_data: dict = {}
+                            for _, _pi_c in filtered_projects.items():
+                                if _pi_c.get("client") != _cli:
+                                    continue
+                                _gf_c = _pi_c.get("type_data", {}).get("GROSS FEES", _pi_c.get("margin_data", {}))
+                                for _kc, _vc in _gf_c.items():
+                                    _cli_data[_kc] = _cli_data.get(_kc, 0) + _vc
+                            _yvals_cli = _apply_flip([_cli_data.get(p, 0) for p in _period_list])
+                            _ylbls_cli = [human_tl(v) for v in _yvals_cli]
+                            _cc        = _cli_colors_extra[_ci % len(_cli_colors_extra)]
+                            fig_margin.add_trace(go.Scatter(
+                                x=_period_list, y=_yvals_cli,
+                                name=f"{_cli} (client total)",
+                                mode="lines+markers+text",
+                                text=_ylbls_cli,
+                                textposition="top center",
+                                textfont=dict(size=_txt_size, color=_cc),
+                                line=dict(color=_cc, width=2, dash="dot"),
+                                marker=dict(size=7, symbol="diamond"),
+                                hovertemplate=f"<b>{_cli}</b> — %{{x}}: %{{customdata}}<extra></extra>",
+                                customdata=_ylbls_cli,
+                            ))
+
+                    _has_cmp = bool(_compare_proj_keys or _compare_cli_keys)
                     fig_margin.update_layout(
                         plot_bgcolor="white",
                         font=dict(family=_FONT, color=PRIMARY),
-                        yaxis_title="Production (TL)",
-                        xaxis_title="",
-                        xaxis_tickangle=-45,
-                        margin=dict(t=60, b=20),
+                        title=(
+                            f"Comparison — {_axis_lbl}{_type_suffix}{_flip_suffix}"
+                            if _has_cmp
+                            else f"{sel_label}{_type_suffix} — {_axis_lbl}{_flip_suffix}"
+                        ),
+                        yaxis_title=_axis_lbl,
+                        xaxis=dict(type="category", tickangle=-45),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        margin=dict(t=70, b=20),
                     )
-                    st.plotly_chart(fig_margin, use_container_width=True, key=f"margin_chart_{sel_proj}_{ph_cost_type}")
+                    st.plotly_chart(fig_margin, use_container_width=True,
+                                    key=f"margin_chart_{sel_proj}_{ph_cost_type}")
 
                     next_yr_val = _active_margin_data.get("Next Year", None)
                     td_val      = _active_margin_data.get("TD (To Date)", None)
@@ -1890,22 +2842,23 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                         metric_cols[3].metric("TD To Date (TL)", human_tl(td_val))
 
                     df_display = pd.DataFrame([
-                        {"Period": row["Period"], "Production (TL)": human_tl(row["Production (TL)"])}
-                        for row in margin_rows
+                        {"Period": row["Period"], _val_col: human_tl(row[_val_col])}
+                        for row in df_margin.to_dict("records")
                     ])
                     if bl_year:
                         df_display = pd.concat([df_display, pd.DataFrame([
-                            {"Period": f"{bl_year} Production (TL)", "Production (TL)": human_tl(bl_val)}
+                            {"Period": f"{bl_year} Production (TL)", _val_col: human_tl(bl_val)}
                         ])], ignore_index=True)
                     if bo_year:
                         df_display = pd.concat([df_display, pd.DataFrame([
-                            {"Period": f"End {bo_year} Total (TL)", "Production (TL)": human_tl(bo_val)}
+                            {"Period": f"End {bo_year} Forecast (TL)", _val_col: human_tl(bo_val)}
                         ])], ignore_index=True)
                     st.dataframe(df_display, hide_index=True, use_container_width=True)
+                    _export_label = "Margin" if ph_cost_type == _ALLTYPE_LABEL else "Production"
                     st.download_button(
-                        "⬇ Export Production to Excel",
+                        f"⬇ Export {_export_label} to Excel",
                         df_to_excel_bytes(df_display),
-                        file_name=f"Production_{proj_info['code']}.xlsx",
+                        file_name=f"{_export_label}_{proj_info['code']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"prod_export_{sel_proj}",
                     )
@@ -1960,7 +2913,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
 def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
     _sm_label  = lambda sm: sm if multi_year else sm.split()[0]
     st.markdown("### Scenarios")
-    sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients", "BU Mix"])
+    sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients", "BU Mix", "What-If"])
 
     _sm_latest   = selected_months[-1]
     _d_latest    = loaded_data.get(_sm_latest)
@@ -2002,6 +2955,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 plot_bgcolor="white",
                 font=dict(family=_FONT, color=PRIMARY),
                 showlegend=False,
+                yaxis_title="kTL",
                 margin=dict(t=60, b=20),
             )
             _fig_busum.update_traces(textposition="outside", cliponaxis=False)
@@ -2026,13 +2980,19 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     for t in ["Order", "Offer", "Opp"]
                 ]},
             )
+            _df_tier["Label"] = _df_tier["Value"].apply(human_k)
             _fig_tier.update_layout(
                 plot_bgcolor="white",
                 font=dict(family=_FONT, color=PRIMARY),
                 showlegend=False,
+                yaxis_title="kTL",
                 margin=dict(t=60, b=20),
             )
-            _fig_tier.update_traces(texttemplate="%{y:,.0f}", textposition="inside", insidetextanchor="middle")
+            _fig_tier.update_traces(
+                text=_df_tier["Label"],
+                textposition="inside", insidetextanchor="middle",
+                constraintext="inside",
+            )
             st.plotly_chart(_fig_tier, use_container_width=True, key="sc_butiertotal")
 
             # EBIT by BU
@@ -2062,7 +3022,9 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _fig_ebit.update_layout(
                     plot_bgcolor="white",
                     font=dict(family=_FONT, color=PRIMARY),
-                    showlegend=False, margin=dict(t=60, b=20),
+                    showlegend=False,
+                    yaxis_title="kTL",
+                    margin=dict(t=60, b=20),
                 )
                 _fig_ebit.update_traces(textposition="outside", cliponaxis=False)
                 st.plotly_chart(_fig_ebit, use_container_width=True, key="sc_buebit")
@@ -2082,7 +3044,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
 
                 # NS tiers
                 st.markdown("**Net Sales**")
-                for _tier, _label in [("Contract", "Contract"), ("WP", "Work Pipeline")]:
+                for _tier, _label in [("Contract", "Contract"), ("WP", "Weighted Proposals (WP)")]:
                     _target = _ns[_tier][_t_idx]
                     _ytd    = _ns[_tier][_y_idx]
                     _pct    = _ytd / _target if _target > 0 else 0
@@ -2096,7 +3058,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _target_fo = sum(_ns[k][_t_idx] for k in ["Contract", "WP", "WO"])
                 _pct_fo    = _ytd_fo / _target_fo if _target_fo > 0 else 0
                 _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
-                _tc1.markdown("**Full Outlook**")
+                _tc1.markdown("**Full Outlook (Contract+WP+WO)**")
                 _tc1.progress(min(1.0, max(0.0, _pct_fo)))
                 _tc2.metric("YTD (kTL)", fmt_ktl(_ytd_fo))
                 _tc3.metric("Target (kTL)", fmt_ktl(_target_fo), delta=f"{_pct_fo:.0%}")
@@ -2110,8 +3072,8 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     st.markdown("**EBIT**")
                     for _tier, _label in [
                         ("Contract", "Contract"),
-                        ("Contract+WP", "Contract + WP"),
-                        ("Contract+WP+WO", "Full Outlook"),
+                        ("Contract+WP", "Contract + Weighted Proposals"),
+                        ("Contract+WP+WO", "Full Outlook (Contract+WP+WO)"),
                     ]:
                         _target = _ebit[_tier][_et_idx]
                         _ytd    = _ebit[_tier][_ey_idx]
@@ -2201,7 +3163,6 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _fig_pipe = px.bar(
                     _df_melt, x="BU", y="Value (kTL)", color="BU_Stage",
                     barmode="stack",
-                    title=f"Pipeline Stages by BU — {_sm_latest}",
                     color_discrete_map=_bu_stage_cmap,
                     text="Label",
                     category_orders={"BU_Stage": [
@@ -2212,9 +3173,16 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _fig_pipe.update_layout(
                     plot_bgcolor="white",
                     font=dict(family=_FONT, color=PRIMARY),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.18,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=11),
+                    ),
                     legend_title_text="",
-                    margin=dict(t=80, b=20),
+                    margin=dict(t=20, b=160),
                 )
                 _fig_pipe.update_traces(
                     textposition="inside",
@@ -2248,29 +3216,44 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
 
     # ── S9: Top 10 Clients ────────────────────────────────────────────────────
     with sc_tabs[3]:
-        st.markdown("#### Top 10 Clients")
+        st.markdown("#### Top Clients")
         _cv = st.radio(
-            "Data source", ["Order Intake", "WIP"],
+            "Data source", ["Net Sales (Production)", "WIP"],
             horizontal=True, key="sc_client_src",
         )
-        _formatter = human_k if _cv == "Order Intake" else human_tl
-        _unit      = "kTL" if _cv == "Order Intake" else "TL"
+        _formatter = human_tl
+        _unit      = "TL"
 
         _cli_totals: dict[str, float] = {}
-        if _cv == "Order Intake":
-            for _sm in selected_months:
-                _d = loaded_data.get(_sm)
-                if not _d:
-                    continue
-                for _p in _d["oi_projects"]:
-                    _c = _p.get("client") or "Unknown"
-                    _cli_totals[_c] = _cli_totals.get(_c, 0) + _p["value"]
+        if _cv == "Net Sales (Production)":
+            # Aggregate GROSS FEES production YTD from Ext. Prod. for each client
+            _ns_fp = EXCEL_FILES.get(_sm_latest)
+            if _ns_fp and _ns_fp.exists():
+                _ns_md = load_margin_data(str(_ns_fp))
+                if _ns_md:
+                    for _proj_info in _ns_md["projects"].values():
+                        _c = _proj_info.get("client") or "Unknown"
+                        if not _c or _c.lower() in ("nan", "none", ""):
+                            continue
+                        # Sum all monthly GROSS FEES production (YTD)
+                        _gf = _proj_info.get("type_data", {}).get(
+                            "GROSS FEES", _proj_info.get("margin_data", {})
+                        )
+                        _ytd = sum(
+                            v for k, v in _gf.items()
+                            if not any(k.startswith(p) for p in ("BL (", "BO (", "Next Year", "TD"))
+                        )
+                        if _ytd > 0:
+                            _cli_totals[_c] = _cli_totals.get(_c, 0) + _ytd
+            if not _cli_totals:
+                st.info("NS production data unavailable — 'Ext. Prod.' sheet may be missing. Load more months or check the file.")
         else:
             _d = _d_latest
             if _d:
                 for _p in _d["wip_projects"]:
                     _c = _p.get("client") or "Unknown"
-                    _cli_totals[_c] = _cli_totals.get(_c, 0) + _p["wip_tl"]
+                    if _p["wip_tl"] > 0:
+                        _cli_totals[_c] = _cli_totals.get(_c, 0) + _p["wip_tl"]
 
         if _cli_totals:
             _top10 = sorted(_cli_totals.items(), key=lambda x: -x[1])[:_CLIENT_TOP_N]
@@ -2282,7 +3265,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _fig_tbar = px.bar(
                     _df_top, x="Value", y="Client", orientation="h",
                     text="Label",
-                    title=f"Top 10 Clients by {_cv} ({_unit})",
+                    title=f"Top {_CLIENT_TOP_N} Clients — {_cv} ({_unit})",
                     color_discrete_sequence=[PRIMARY],
                     category_orders={"Client": _df_top["Client"].tolist()},
                 )
@@ -2310,14 +3293,12 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 hide_index=True, use_container_width=True,
             )
             st.download_button(
-                "⬇ Export Top 10 to Excel",
+                "⬇ Export to Excel",
                 df_to_excel_bytes(_df_top[["Client", "Value", "Label"]].rename(columns={"Label": _unit})),
-                file_name=f"Top10_Clients_{_cv.replace(' ', '_')}.xlsx",
+                file_name=f"Top_Clients_{_cv.replace(' ', '_')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="sc_top10_export",
             )
-        else:
-            st.info("No client data available for the selected period.")
 
     # ── S5: BU Mix ────────────────────────────────────────────────────────────
     with sc_tabs[4]:
@@ -2481,6 +3462,130 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     key="sc_mix_export",
                 )
 
+    # ── S6: What-If ───────────────────────────────────────────────────────────
+    with sc_tabs[5]:
+        st.markdown("#### What-If Analysis")
+        st.caption(
+            "Adjust assumptions to see projected NS and EBIT impact on the latest selected month. "
+            "Sliders apply to Contract NS only; EBIT impact uses the current EBIT % margin."
+        )
+        if not _d_latest:
+            st.warning("No data available for the selected month.")
+        else:
+            _wi_ns   = _d_latest["ns"]
+            _wi_ebit = _d_latest["ebit"]
+            _wi_epct = _d_latest.get("ebit_pct")
+
+            _wi_abbr  = _sm_latest.split()[0][:3]
+            _wi_ns_i  = _cat_index(_wi_ns["cats"],   _wi_abbr)
+            _wi_eb_i  = _cat_index(_wi_ebit["cats"], _wi_abbr)
+            _wi_ep_i  = _cat_index(_wi_epct["cats"], _wi_abbr) if _wi_epct else -1
+
+            _wi_ns_base  = monthly_val(_wi_ns["Contract"],       _wi_ns["cats"],   _wi_ns_i)
+            _wi_eb_base  = monthly_val(_wi_ebit["Contract"],     _wi_ebit["cats"], _wi_eb_i)
+            _wi_ebit_pct = safe_float(_wi_epct["EBIT_Pct"][_wi_ep_i]) if _wi_epct and _wi_ep_i != -1 else 0
+
+            _wi_c1, _wi_c2 = st.columns(2)
+            with _wi_c1:
+                st.markdown("**Revenue Assumptions**")
+                _wi_ns_growth = st.slider(
+                    "Contract NS growth vs actual (%)",
+                    min_value=-50, max_value=100, value=0, step=1, key="wi_ns_growth",
+                )
+                _wi_new_proj = st.number_input(
+                    "Additional pipeline wins (kTL)",
+                    min_value=0, value=0, step=1000, key="wi_new_proj",
+                    help="Extra one-off order intake not in current actuals.",
+                )
+            with _wi_c2:
+                st.markdown("**Cost/Margin Assumptions**")
+                _wi_margin_adj = st.slider(
+                    "EBIT margin adjustment (percentage points)",
+                    min_value=-20, max_value=20, value=0, step=1, key="wi_margin_adj",
+                    help="Shifts the EBIT % up or down from the current actual.",
+                )
+
+            # ── Projected values ──────────────────────────────────────────────
+            _wi_ns_adj  = _wi_ns_base * (1 + _wi_ns_growth / 100) + _wi_new_proj
+            _wi_pct_adj = _wi_ebit_pct + _wi_margin_adj / 100
+            _wi_eb_adj  = _wi_ns_adj * _wi_pct_adj
+
+            st.markdown("---")
+            st.markdown(f"**Projected results for {_sm_latest}**")
+            _r1, _r2, _r3, _r4 = st.columns(4)
+            _r1.metric(
+                "Actual NS (kTL)",      fmt_ktl(_wi_ns_base),
+            )
+            _r2.metric(
+                "Projected NS (kTL)",   fmt_ktl(_wi_ns_adj),
+                delta=fmt_ktl(_wi_ns_adj - _wi_ns_base),
+            )
+            _r3.metric(
+                "Actual EBIT (kTL)",    fmt_ktl(_wi_eb_base),
+            )
+            _r4.metric(
+                "Projected EBIT (kTL)", fmt_ktl(_wi_eb_adj),
+                delta=fmt_ktl(_wi_eb_adj - _wi_eb_base),
+            )
+            _m1, _m2 = st.columns(2)
+            _m1.metric(
+                "Actual EBIT %",    f"{_wi_ebit_pct * 100:.1f}%",
+            )
+            _m2.metric(
+                "Projected EBIT %", f"{_wi_pct_adj * 100:.1f}%",
+                delta=f"{_wi_margin_adj:+d} pp",
+            )
+
+            # Waterfall chart: Actual NS → Growth → New wins → Projected NS
+            # Build arrays dynamically — skip intermediate bars that are exactly zero
+            _wf_growth_val = _wi_ns_base * _wi_ns_growth / 100
+            _wf_new_val    = float(_wi_new_proj)
+            _wf_x       = ["Actual NS"]
+            _wf_y_plot  = [_wi_ns_base]
+            _wf_measure = ["absolute"]
+            _wf_text    = [fmt_ktl(_wi_ns_base)]
+            if abs(_wf_growth_val) > 0.01:
+                _wf_x.append(f"Growth {_wi_ns_growth:+d}%")
+                _wf_y_plot.append(_wf_growth_val)
+                _wf_measure.append("relative")
+                _wf_text.append(fmt_ktl(_wf_growth_val))
+            if abs(_wf_new_val) > 0.01:
+                _wf_x.append("New Wins")
+                _wf_y_plot.append(_wf_new_val)
+                _wf_measure.append("relative")
+                _wf_text.append(fmt_ktl(_wf_new_val))
+            _wf_x.append("Projected NS")
+            _wf_y_plot.append(0)  # go.Waterfall "total" measure ignores y — running sum is used
+            _wf_measure.append("total")
+            _wf_text.append(fmt_ktl(_wi_ns_adj))
+            _fig_wf = go.Figure(go.Waterfall(
+                x=_wf_x,
+                y=_wf_y_plot,
+                measure=_wf_measure,
+                text=_wf_text,
+                textposition="outside",
+                connector=dict(line=dict(color="#9CA3AF")),
+                increasing=dict(marker_color="#10B981"),
+                decreasing=dict(marker_color="#EF4444"),
+                totals=dict(marker_color=PRIMARY),
+            ))
+            _fig_wf.update_layout(
+                plot_bgcolor="white",
+                font=dict(family=_FONT, color=PRIMARY),
+                yaxis_title="kTL",
+                margin=dict(t=40, b=20),
+                height=320,
+            )
+            st.plotly_chart(_fig_wf, use_container_width=True, key="wi_waterfall")
+            st.caption(
+                "Waterfall shows the NS movement from actual to projected. "
+                "EBIT projection = Projected NS × Adjusted EBIT %."
+            )
+
+
+# ── Tab Exec: Executive Summary ────────────────────────────────────────────────
+with tab_exec:
+    _render_exec_summary(loaded_data, selected_months, _multi_year)
 
 # ── Tab 5: Project History ────────────────────────────────────────────────────
 with tab5:
