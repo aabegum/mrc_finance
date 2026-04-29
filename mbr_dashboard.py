@@ -518,9 +518,12 @@ def load_month(filepath: str):
         ("T&SI", "BU_EBIT_TSI"),
         ("NUC",  "BU_EBIT_NUC"),
     ]:
+        p_row_key = f"BU_EBIT_P_{b_key.replace('&', '')}"
+        p_row_def = {"ENG": 108, "MC": 107, "T&SI": 109, "NUC": 110}[b_key]
         bu_ebit[b_key] = {
             "cats":  cats_bu_ebit,
             "Total": row_vals(df, _r_cfg.get(b_row, 100) - 1, c_ebit_s, c_ebit_e),
+            "Pct":   row_vals(df, _r_cfg.get(p_row_key, p_row_def), c_ebit_s, c_ebit_e),
         }
 
     # ── Build raw dicts ────────────────────────────────────────────────────────
@@ -535,15 +538,39 @@ def load_month(filepath: str):
         "Contract":       row_vals(df, R["Slide4_Contract"],       1, 16),
         "Contract+WP":    row_vals(df, R["Slide4_Contract_WP"],    1, 16),
         "Contract+WP+WO": row_vals(df, R["Slide4_Contract_WP_WO"], 1, 16),
+        "Pct":            row_vals(df, _r_cfg.get("EBIT_P_kTL", 42), 1, 16),
     }
 
-    # ── EBIT % / Net Fees % rows (rows 67/68/69 in Excel = 66/67/68 0-indexed) ──
-    ebit_pct_out = {
-        "cats":            cats_ebit,
-        "EBIT_Pct":        row_vals(df, _r_cfg.get("EBIT_Pct_Actual",  66), 1, 16),
-        "EBIT_Pct_Budget": row_vals(df, _r_cfg.get("EBIT_Pct_Budget",  67), 1, 16),
-        "NetFees_Pct":     row_vals(df, _r_cfg.get("Net_Fees_Pct",     68), 1, 16),
-    }
+    # ── EBIT % / Net Fees % rows — read from "EBIT Calc." sheet rows 67/68/69 ──
+    # The EBIT Calc. sheet has date headers in row 2 (pandas row 1), months start
+    # at column B (pandas col 1). Rows 67/68/69 (Excel) = 66/67/68 (0-indexed).
+    _ec_sheet = "EBIT Calc."
+    ebit_pct_out: dict = {"cats": [], "EBIT_Pct": [], "EBIT_Pct_Budget": [], "NetFees_Pct": []}
+    if _ec_sheet in xl.sheet_names:
+        try:
+            df_ec    = pd.read_excel(xl, sheet_name=_ec_sheet, header=None)
+            _ec_cats = []
+            for _ec_c in range(1, 14):  # columns B-N (12 months + possible total)
+                _cv = df_ec.iloc[1, _ec_c] if _ec_c < df_ec.shape[1] else None
+                if _cv is None or (isinstance(_cv, float) and pd.isna(_cv)):
+                    _ec_cats.append("")
+                elif hasattr(_cv, "strftime"):
+                    _ec_cats.append(_cv.strftime("%b"))
+                else:
+                    _s = str(_cv).strip()
+                    _matched = next((m.capitalize() for m in _MONTH_ABBREVS if m in _s.lower()), None)
+                    _ec_cats.append(_matched if _matched else clean_label(_cv))
+            _ec_r_act = _r_cfg.get("EBIT_Pct_Actual",  66)
+            _ec_r_bud = _r_cfg.get("EBIT_Pct_Budget",  67)
+            _ec_r_nf  = _r_cfg.get("Net_Fees_Pct",     68)
+            ebit_pct_out = {
+                "cats":            _ec_cats,
+                "EBIT_Pct":        row_vals(df_ec, _ec_r_act, 1, 14),
+                "EBIT_Pct_Budget": row_vals(df_ec, _ec_r_bud, 1, 14),
+                "NetFees_Pct":     row_vals(df_ec, _ec_r_nf,  1, 14),
+            }
+        except Exception:
+            pass
 
     return {
         "ns":       ns_out,
@@ -578,7 +605,7 @@ def fetch_all_data(months_tuple):
     return res
 
 
-@st.cache_data(ttl=3600)
+@st.cache_resource(ttl=3600)
 def load_margin_data(filepath: str):
     """Load margin history from 'Ext. Prod.' sheet."""
     try:
@@ -772,6 +799,7 @@ def load_margin_data(filepath: str):
         return None
 
 
+@st.cache_resource(ttl=3600)
 def merge_margin_data(selected_months):
     all_projects   = {}
     all_month_cols = []
@@ -881,7 +909,7 @@ def chart_stacked(data, title, keys, color_palette=None):
     return fig
 
 
-def chart_grouped(data, title, keys, color_palette=None):
+def chart_grouped(data, title, keys, color_palette=None, percents=None):
     n    = min(len(data["cats"]), min(len(data[k]) for k in keys))
     cats = data["cats"][:n]
     colors = color_palette or ["#0EA5E9", "#10B981", "#F59E0B"]
@@ -1404,35 +1432,84 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         prev_abbr     = prev_sm.split()[0][:3]
         prev_ebit_idx = _cat_index(p_ebit["cats"], prev_abbr)
 
-    # Metric cards show per-month delta; charts use the full cumulative array.
-    # Round before delta so display values are self-consistent.
-    st.caption(f"Monthly — {sm} (kTL)")
-    mcols = st.columns(len(k_list))
-    for idx_m, k in enumerate(k_list):
-        val   = round(monthly_val(ebit[k], ebit["cats"], ebit_idx), _KTLD)
-        p_val = round(monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx), _KTLD) if p_ebit and prev_ebit_idx != -1 else None
-        delta = round(val - p_val, _KTLD) if p_val is not None else None
-        mcols[idx_m].metric(k, _mfmt(val), delta=_mfmt(delta) if delta is not None else None)
+    if not is_total:
+        # BU view — compact 4-column row: Monthly | YTD | EOY | EBIT %
+        _mon_val = round(monthly_val(ebit["Total"], ebit["cats"], ebit_idx), _KTLD)
+        _p_val   = round(monthly_val(p_ebit["Total"], p_ebit["cats"], prev_ebit_idx), _KTLD) if p_ebit and prev_ebit_idx != -1 else None
+        _delta   = round(_mon_val - _p_val, _KTLD) if _p_val is not None else None
+        _ytd_val = ebit["Total"][ebit_idx] if ebit_idx != -1 and ebit_idx < len(ebit["Total"]) else 0.0
+        _eoy_val = ebit["Total"][eoy_idx]  if eoy_idx  != -1 and eoy_idx  < len(ebit["Total"]) else 0.0
+        _pct_raw = safe_float(ebit["Pct"][ebit_idx]) if ebit_idx != -1 and ebit_idx < len(ebit.get("Pct", [])) else None
 
-    if ebit_idx != -1:
-        st.caption("YTD Cumulative (kTL)")
-        ytd_cols = st.columns(len(k_list))
+        st.caption(f"Monthly / YTD / EOY — {sm} (kTL)")
+        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+        _bc1.metric("Monthly",  _mfmt(_mon_val), delta=_mfmt(_delta) if _delta is not None else None)
+        _bc2.metric("YTD",      _mfmt(_ytd_val))
+        _bc3.metric("EOY",      _mfmt(_eoy_val))
+        if _pct_raw is not None:
+            _bc4.metric("EBIT %", f"{_pct_raw * 100:.1f}%")
+    else:
+        # Company Total — three-row layout
+        st.caption(f"Monthly — {sm} (kTL)")
+        mcols = st.columns(len(k_list))
         for idx_m, k in enumerate(k_list):
-            ytd_val = ebit[k][ebit_idx] if ebit_idx < len(ebit[k]) else 0.0
-            ytd_cols[idx_m].metric(f"YTD {k}", _mfmt(ytd_val))
+            val   = round(monthly_val(ebit[k], ebit["cats"], ebit_idx), _KTLD)
+            p_val = round(monthly_val(p_ebit[k], p_ebit["cats"], prev_ebit_idx), _KTLD) if p_ebit and prev_ebit_idx != -1 else None
+            delta = round(val - p_val, _KTLD) if p_val is not None else None
+            mcols[idx_m].metric(k, _mfmt(val), delta=_mfmt(delta) if delta is not None else None)
 
-    if eoy_idx != -1:
-        st.caption("End of Year (kTL)")
-        eoy_cols = st.columns(len(k_list))
-        for idx_m, k in enumerate(k_list):
-            eoy_val = ebit[k][eoy_idx] if eoy_idx < len(ebit[k]) else 0.0
-            eoy_cols[idx_m].metric(f"EOY {k}", _mfmt(eoy_val))
+        if ebit_idx != -1:
+            st.caption("YTD Cumulative (kTL)")
+            ytd_cols = st.columns(len(k_list))
+            for idx_m, k in enumerate(k_list):
+                ytd_val = ebit[k][ebit_idx] if ebit_idx < len(ebit[k]) else 0.0
+                ytd_cols[idx_m].metric(f"YTD {k}", _mfmt(ytd_val))
+
+        if eoy_idx != -1:
+            st.caption("End of Year (kTL)")
+            eoy_cols = st.columns(len(k_list))
+            for idx_m, k in enumerate(k_list):
+                eoy_val = ebit[k][eoy_idx] if eoy_idx < len(ebit[k]) else 0.0
+                eoy_cols[idx_m].metric(f"EOY {k}", _mfmt(eoy_val))
 
     ebit_palette = None if is_total else [BU_COLORS.get(bu_name, "#0EA5E9")]
     st.plotly_chart(
-        chart_grouped(ebit, "", k_list, ebit_palette),
+        chart_grouped(ebit, "", k_list, ebit_palette, percents=ebit.get("Pct")),
         use_container_width=True, key=f"ebit_{bu_name}_{sm}",
     )
+
+    # BU view — EBIT % trend chart (mirrors Company Total margin rates display)
+    if not is_total:
+        _pct_data = ebit.get("Pct", [])
+        _pct_month_idxs = [
+            i for i, c in enumerate(ebit["cats"][:len(ebit["Total"])])
+            if str(c).strip().lower()[:3] in _MONTH_ABBREVS
+        ]
+        if _pct_month_idxs and len(_pct_data) > 0:
+            _pct_cats = [ebit["cats"][i] for i in _pct_month_idxs if i < len(_pct_data)]
+            _pct_vals = [safe_float(_pct_data[i]) * 100 for i in _pct_month_idxs if i < len(_pct_data)]
+            if _pct_cats and any(v != 0 for v in _pct_vals):
+                fig_bu_pct = go.Figure()
+                fig_bu_pct.add_trace(go.Scatter(
+                    x=_pct_cats, y=_pct_vals,
+                    name="EBIT % (YTD)",
+                    mode="lines+markers+text",
+                    text=[f"{v:.1f}%" for v in _pct_vals],
+                    textposition="top center",
+                    line=dict(color=BU_COLORS.get(bu_name, PRIMARY), width=2),
+                    marker=dict(size=7),
+                ))
+                fig_bu_pct.update_layout(
+                    plot_bgcolor="white",
+                    font=dict(family=_FONT, color=PRIMARY),
+                    yaxis=dict(title="%", ticksuffix="%"),
+                    xaxis=dict(type="category"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    margin=dict(t=40, b=20),
+                    height=260,
+                )
+                st.caption(f"EBIT % (YTD) — {bu_name}")
+                st.plotly_chart(fig_bu_pct, use_container_width=True, key=f"ebit_bu_pct_{bu_name}_{sm}")
 
     # ── Chart data table ───────────────────────────────────────────────────────
     with st.expander("📊 Chart Data (YTD Cumulative, kTL)", expanded=False):
@@ -1461,22 +1538,18 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         _ns   = data["ns"]
         _eb   = ebit  # already resolved above (ebit = data["ebit"] for is_total)
 
-        # Current-month YTD cumulative margin (safest for reporting)
-        _ns_idx  = _cat_index(_ns["cats"], month_abbr)
-        _ns_ytd  = _ns["Contract"][_ns_idx]     if _ns_idx  != -1 and _ns_idx  < len(_ns["Contract"])  else 0
-        _eb_ytd  = _eb["Contract"][ebit_idx]    if ebit_idx != -1 and ebit_idx < len(_eb["Contract"])   else 0
-        _act_pct = _eb_ytd / _ns_ytd * 100      if _ns_ytd  != 0  else 0
-
-        # Budget margin: use 2026 Target column in each cats list
-        _ns_t_idx = next((i for i, c in enumerate(_ns["cats"]) if "target" in str(c).lower()), -1)
-        _eb_t_idx = next((i for i, c in enumerate(_eb["cats"]) if "target" in str(c).lower()), -1)
-        _ns_tgt   = _ns["Contract"][_ns_t_idx] if _ns_t_idx != -1 and _ns_t_idx < len(_ns["Contract"]) else 0
-        _eb_tgt   = _eb["Contract"][_eb_t_idx] if _eb_t_idx != -1 and _eb_t_idx < len(_eb["Contract"]) else 0
-        _bud_pct  = _eb_tgt / _ns_tgt * 100    if _ns_tgt  != 0  else 0
-
-        # Net Fees %: try the stored row first (it may be non-zero); fall back to N/A
         _epct    = data.get("ebit_pct")
         _ep_i    = _cat_index(_epct["cats"], month_abbr) if _epct else -1
+
+        # Current-month YTD cumulative margin (from Excel row 66)
+        _act_raw = safe_float(_epct["EBIT_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["EBIT_Pct"])) else 0
+        _act_pct = _act_raw * 100
+
+        # Budget margin: from Excel row 67
+        _bud_raw = safe_float(_epct["EBIT_Pct_Budget"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["EBIT_Pct_Budget"])) else 0
+        _bud_pct = _bud_raw * 100
+
+        # Net Fees %: try the stored row first (it may be non-zero); fall back to N/A
         _nf_raw  = safe_float(_epct["NetFees_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["NetFees_Pct"])) else 0
         _nf_pct  = _nf_raw * 100 if _nf_raw != 0 else None  # None = no data
 
@@ -1500,11 +1573,14 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
             _ep_act    = []
             _ep_bud_ln = []
             for _mi in _ep_month_idxs:
-                _ns_mi = _cat_index(_ns["cats"], _eb["cats"][_mi])
-                _ns_v  = _ns["Contract"][_ns_mi] if _ns_mi != -1 and _ns_mi < len(_ns["Contract"]) else 0
-                _eb_v  = _eb["Contract"][_mi]    if _mi < len(_eb["Contract"]) else 0
-                _ep_act.append(_eb_v / _ns_v * 100 if _ns_v != 0 else 0)
-                _ep_bud_ln.append(_bud_pct)  # flat target line
+                _ep_cat_str = _eb["cats"][_mi]
+                _epct_i = _cat_index(_epct["cats"], _ep_cat_str) if _epct else -1
+                
+                _act_m_raw = safe_float(_epct["EBIT_Pct"][_epct_i]) if (_epct and _epct_i != -1 and _epct_i < len(_epct["EBIT_Pct"])) else 0
+                _ep_act.append(_act_m_raw * 100)
+                
+                _bud_m_raw = safe_float(_epct["EBIT_Pct_Budget"][_epct_i]) if (_epct and _epct_i != -1 and _epct_i < len(_epct["EBIT_Pct_Budget"])) else 0
+                _ep_bud_ln.append(_bud_m_raw * 100)
 
             fig_pct = go.Figure()
             fig_pct.add_trace(go.Scatter(
@@ -1645,26 +1721,14 @@ def render_oi_view(sm, data, prev_sm, prev_data, is_total, bu_name,
 
 
 def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
-                    proj_sel=None, proj_text="", cli_sel=None, cli_text="", include_nuc=False):
+                    proj_sel=None, proj_text="", cli_sel=None, cli_text=""):
     _base_wip = data["wip_projects"]
-    if include_nuc:
-        _combined = _base_wip + data.get("wip_projects_nuc", [])
-        _base_wip = (
-            sorted([p for p in _combined if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
-            + sorted([p for p in _combined if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
-        )
     if is_total:
         wip       = filter_wip(_base_wip, proj_sel, proj_text, cli_sel, cli_text)
         total_wip = sum(p["wip_tl"] for p in wip)
         delta_wip = None
         if prev_data:
             _prev_base = prev_data["wip_projects"]
-            if include_nuc:
-                _pc = _prev_base + prev_data.get("wip_projects_nuc", [])
-                _prev_base = (
-                    sorted([p for p in _pc if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
-                    + sorted([p for p in _pc if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
-                )
             prev_total = sum(p["wip_tl"] for p in filter_wip(_prev_base, proj_sel, proj_text, cli_sel, cli_text))
             delta_wip  = fmt_tl_as_ktl(total_wip - prev_total)
     else:
@@ -1673,12 +1737,6 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
         delta_wip = None
         if prev_data:
             _prev_base = prev_data["wip_projects"]
-            if include_nuc:
-                _pc = _prev_base + prev_data.get("wip_projects_nuc", [])
-                _prev_base = (
-                    sorted([p for p in _pc if p["wip_tl"] >= 0], key=lambda x: x["wip_tl"], reverse=True)
-                    + sorted([p for p in _pc if p["wip_tl"] < 0], key=lambda x: x["wip_tl"])
-                )
             prev_wip  = [p for p in filter_wip(_prev_base, proj_sel, proj_text, cli_sel, cli_text) if p["bu"] == bu_name]
             delta_wip = fmt_tl_as_ktl(total_wip - sum(p["wip_tl"] for p in prev_wip))
 
@@ -1688,10 +1746,7 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
         _wip_lbl += f", incl. {_wip_neg_count} negative"
     _wip_lbl += ") (kTL)"
 
-    # Grand total mirrors reporting code: ALL projects (incl. below 1M threshold)
     _grand = data.get("wip_gross_total", 0.0)
-    if include_nuc:
-        _grand += data.get("wip_gross_total_nuc", 0.0)
 
     _mc1, _mc2 = st.columns(2)
     _mc1.metric(_wip_lbl, fmt_tl_as_ktl(total_wip), delta=delta_wip)
@@ -1767,43 +1822,6 @@ def render_wip_view(sm, data, prev_sm, prev_data, is_total, bu_name,
                     key=f"wip_aggrid_{bu_name}_{sm}",
                 )
 
-        with st.expander("💱 WIP by Currency", expanded=False):
-            cur_totals = {}
-            for p in wip:
-                cur = p.get("orig_currency") or "Unknown"
-                cur_totals[cur] = cur_totals.get(cur, 0) + p["wip_tl"]
-            df_cur = pd.DataFrame([
-                {"Currency": k, "WIP TL": v, "Formatted": human_tl(v)}
-                for k, v in sorted(cur_totals.items(), key=lambda x: -x[1])
-            ])
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                fig_cpie = px.pie(
-                    df_cur, values="WIP TL", names="Currency",
-                    title="WIP share by currency",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                fig_cpie.update_traces(textinfo="label+percent")
-                fig_cpie.update_layout(margin=dict(t=40, b=0))
-                st.plotly_chart(fig_cpie, use_container_width=True, key=f"cur_pie_{bu_name}_{sm}")
-            with cc2:
-                fig_cbar = px.bar(
-                    df_cur, x="WIP TL", y="Currency", orientation="h",
-                    text="Formatted", title="WIP TL by currency",
-                    color="Currency",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                fig_cbar.update_layout(
-                    plot_bgcolor="white", showlegend=False,
-                    font=dict(family=_FONT, color=PRIMARY),
-                    margin=dict(t=40, b=0),
-                )
-                fig_cbar.update_traces(textposition="outside", cliponaxis=False)
-                st.plotly_chart(fig_cbar, use_container_width=True, key=f"cur_bar_{bu_name}_{sm}")
-            st.dataframe(
-                df_cur[["Currency", "Formatted"]].rename(columns={"Formatted": "WIP TL"}),
-                hide_index=True, use_container_width=True,
-            )
 
 
 def _month_cols_iter(months, data_map):
@@ -1952,21 +1970,6 @@ with tab3:
 
 # ── Tab 4: WIP ────────────────────────────────────────────────────────────────
 with tab4:
-    wip_include_nuc = st.checkbox(
-        "Include Nuclear (NUC)",
-        value=False,
-        key="wip_include_nuc",
-        help="Nuclear projects are excluded by default. Enable to include NUC WIP in the table and totals.",
-    )
-    # Extend filter sets if NUC is included
-    if wip_include_nuc:
-        for _d in loaded_data.values():
-            if not _d:
-                continue
-            for _p in _d.get("wip_projects_nuc", []):
-                if _p.get("name"):   all_wip_projs.add(_p["name"])
-                if _p.get("client"): all_wip_clients.add(_p["client"])
-
     with st.expander("🔍 Filter by Project / Client", expanded=False):
         wc1, wc2 = st.columns(2)
         with wc1:
@@ -2002,18 +2005,137 @@ with tab4:
                 st.subheader(f"{_sm_label(sm)} WIP")
                 render_wip_view(sm, data, prev_sm, prev_data, is_total, global_bu_view,
                                 proj_sel=wip_proj_sel, proj_text=wip_proj_text,
-                                cli_sel=wip_cli_sel, cli_text=wip_cli_text,
-                                include_nuc=wip_include_nuc)
+                                cli_sel=wip_cli_sel, cli_text=wip_cli_text)
         else:
             st.subheader(f"{_sm_label(sm)} WIP")
             render_wip_view(sm, data, prev_sm, prev_data, is_total, global_bu_view,
                             proj_sel=wip_proj_sel, proj_text=wip_proj_text,
-                            cli_sel=wip_cli_sel, cli_text=wip_cli_text,
-                            include_nuc=wip_include_nuc)
+                            cli_sel=wip_cli_sel, cli_text=wip_cli_text)
 
 # ── Tab fragments ─────────────────────────────────────────────────────────────
 # Each fragment reruns independently on internal widget changes so the outer
 # st.tabs() selection is never reset when the user interacts with filters.
+
+
+def _pipeline_health_section(d_latest, sm_latest, key_pfx):
+    """Render NS Pipeline Health by BU. key_pfx keeps widget keys unique."""
+    _abbr_ph = sm_latest.split()[0][:3]
+    _pipe_rows_ph = []
+    for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+        _bd = d_latest["bu_ns"][_bu]
+        _mi = _cat_index(_bd["cats"], _abbr_ph)
+        if _mi == -1:
+            continue
+        _ord = _bd["Order"][_mi] if _mi < len(_bd["Order"]) else 0
+        _off = _bd["Offer"][_mi] if _mi < len(_bd["Offer"]) else 0
+        _opp = _bd["Opp"][_mi]   if _mi < len(_bd["Opp"])   else 0
+        _tot = _ord + _off + _opp
+        _tgt = sum(
+            _bd[t][_BU_TARGET_IDX] for t in ["Order", "Offer", "Opp"]
+            if _BU_TARGET_IDX < len(_bd[t])
+        )
+        _pipe_rows_ph.append({
+            "BU":               _bu,
+            "Order":            _ord,
+            "Offer":            _off,
+            "Opp":              _opp,
+            "Total":            _tot,
+            "Year-End Target":  _tgt,
+            "YTD vs Tgt%":      round(_tot / _tgt * 100, 1) if _tgt > 0 else 0,
+            "Secured%":         round(_ord / _tot * 100, 1) if _tot > 0 else 0,
+            "Secured+Offer%":   round((_ord + _off) / _tot * 100, 1) if _tot > 0 else 0,
+        })
+
+    if not _pipe_rows_ph:
+        st.warning("No pipeline data available.")
+        return
+
+    _df_ph = pd.DataFrame(_pipe_rows_ph)
+
+    # Stacked bar chart
+    _df_melt_ph = _df_ph.melt(
+        id_vars=["BU"], value_vars=["Order", "Offer", "Opp"],
+        var_name="Stage", value_name="Value (kTL)",
+    )
+    _bu_stage_cmap_ph = {}
+    for _buc in ["ENG", "MC", "T&SI", "NUC"]:
+        _tc = bu_tier_colors(_buc)
+        _bu_stage_cmap_ph[f"{_buc} Order"] = _tc[0]
+        _bu_stage_cmap_ph[f"{_buc} Offer"] = _tc[1]
+        _bu_stage_cmap_ph[f"{_buc} Opp"]   = _tc[2]
+    _df_melt_ph["BU_Stage"] = _df_melt_ph["BU"] + " " + _df_melt_ph["Stage"]
+    _ph_seg_max = _df_melt_ph["Value (kTL)"].abs().max() or 1
+    _df_melt_ph["Label"] = _df_melt_ph["Value (kTL)"].apply(
+        lambda v: human_k(v) if abs(v) / _ph_seg_max >= _CHART_LABEL_PCT else ""
+    )
+    _fig_ph = px.bar(
+        _df_melt_ph, x="BU", y="Value (kTL)", color="BU_Stage",
+        barmode="stack",
+        color_discrete_map=_bu_stage_cmap_ph,
+        text="Label",
+        category_orders={"BU_Stage": [
+            f"{b} {s}" for b in ["ENG", "MC", "T&SI", "NUC"]
+            for s in ["Order", "Offer", "Opp"]
+        ]},
+    )
+    _fig_ph.update_layout(
+        plot_bgcolor="white",
+        font=dict(family=_FONT, color=PRIMARY),
+        legend=dict(
+            orientation="h", yanchor="top", y=-0.18,
+            xanchor="center", x=0.5, font=dict(size=11),
+        ),
+        legend_title_text="",
+        margin=dict(t=20, b=160),
+    )
+    _fig_ph.update_traces(
+        textposition="inside", insidetextanchor="middle",
+        textfont=dict(size=11, color="white"), cliponaxis=False,
+    )
+    st.plotly_chart(_fig_ph, use_container_width=True, key=f"{key_pfx}_pipe_chart")
+
+    # Conversion rates vs year-end target
+    st.markdown("**Conversion Rates vs Year-End Target**")
+    _ph_cr_cols = st.columns(len(_pipe_rows_ph))
+    for _ci, _row in enumerate(_pipe_rows_ph):
+        _buc = _ph_cr_cols[_ci]
+        _buc.markdown(f"**{_row['BU']}**")
+        _ytd_frac = min(1.0, max(0.0, _row["YTD vs Tgt%"] / 100))
+        _buc.progress(_ytd_frac, text=f"{_row['YTD vs Tgt%']}% of target")
+        _buc.metric("YTD Pipeline (kTL)",    fmt_ktl(_row["Total"]))
+        _buc.metric("Year-End Target (kTL)", fmt_ktl(_row["Year-End Target"]))
+        _buc.metric("Secured (Order%)",      f"{_row['Secured%']}%")
+        _buc.metric("Secured+Offer%",        f"{_row['Secured+Offer%']}%")
+
+    # Summary table with company total row
+    _comp_tot = _df_ph["Total"].sum()
+    _comp_tgt = _df_ph["Year-End Target"].sum()
+    _df_ph_disp = _df_ph.copy()
+    for _fc in ["Total", "Year-End Target", "Order", "Offer", "Opp"]:
+        _df_ph_disp[_fc] = _df_ph_disp[_fc].apply(fmt_ktl)
+    # Convert rate columns to strings now so the TOTAL row "—" doesn't mix types
+    _df_ph_disp["YTD vs Tgt%"]    = _df_ph_disp["YTD vs Tgt%"].apply(lambda v: f"{v}%")
+    _df_ph_disp["Secured%"]        = _df_ph_disp["Secured%"].apply(lambda v: f"{v}%")
+    _df_ph_disp["Secured+Offer%"]  = _df_ph_disp["Secured+Offer%"].apply(lambda v: f"{v}%")
+    _total_ph_row = {
+        "BU":               "TOTAL",
+        "Order":            fmt_ktl(_df_ph["Order"].sum()),
+        "Offer":            fmt_ktl(_df_ph["Offer"].sum()),
+        "Opp":              fmt_ktl(_df_ph["Opp"].sum()),
+        "Total":            fmt_ktl(_comp_tot),
+        "Year-End Target":  fmt_ktl(_comp_tgt),
+        "YTD vs Tgt%":      f"{round(_comp_tot / _comp_tgt * 100, 1)}%" if _comp_tgt > 0 else "—",
+        "Secured%":         "—",
+        "Secured+Offer%":   "—",
+    }
+    _df_ph_display = pd.concat(
+        [_df_ph_disp, pd.DataFrame([_total_ph_row])], ignore_index=True,
+    )
+    st.dataframe(
+        _df_ph_display[["BU", "Order", "Offer", "Opp", "Total", "Year-End Target",
+                         "YTD vs Tgt%", "Secured%", "Secured+Offer%"]],
+        hide_index=True, use_container_width=True,
+    )
 
 
 @st.fragment
@@ -2078,52 +2200,13 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
 
     st.markdown(f"### Executive Summary — {_sm_l(_sm_cur)}")
     st.caption("Top-line figures for the current period. YTD values are cumulative; EOY is the December/year-end forecast.")
-    st.markdown("---")
 
-    # ── Section 1: NS KPIs ────────────────────────────────────────────────────
-    st.markdown("#### Net Sales (kTL)")
-    _nc1, _nc2, _nc3, _nc4 = st.columns(4)
-    _nc1.metric("NS — Monthly",  fmt_ktl(_ns_m),
-                delta=fmt_ktl(_ns_m - _p_ns_m) if _p_ns_m is not None else None)
-    _nc2.metric("NS — YTD",      fmt_ktl(_ns_ytd))
-    _nc3.metric("NS — EOY Fcst", fmt_ktl(_ns_eoy))
-    _nc4.metric("NS — Target",   fmt_ktl(_ns_tgt),
-                delta=f"{_ns_ytd / _ns_tgt:.0%} achieved" if _ns_tgt else None,
-                delta_color="off")
-
-    # ── Section 2: EBIT KPIs ─────────────────────────────────────────────────
-    st.markdown("#### EBIT (kTL)")
-    _ec1, _ec2, _ec3, _ec4 = st.columns(4)
-    _ec1.metric("EBIT — Monthly",  fmt_ktl(_ebit_m),
-                delta=fmt_ktl(_ebit_m - _p_eb_m) if _p_eb_m is not None else None)
-    _ec2.metric("EBIT — YTD",      fmt_ktl(_eb_ytd))
-    _ec3.metric("EBIT — EOY Fcst", fmt_ktl(_eb_eoy))
-    _ec4.metric("EBIT — Target",   fmt_ktl(_eb_tgt),
-                delta=f"{_eb_ytd / _eb_tgt:.0%} achieved" if _eb_tgt else None,
-                delta_color="off")
-
-    # ── Section 3: EBIT % + OI ────────────────────────────────────────────────
-    st.markdown("#### Margins & Order Intake")
-    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
-    _mc1.metric("EBIT % (YTD Actual)",   f"{_ebit_pct:.1f}%",
-                delta=f"{_ebit_pct - _bud_pct:+.1f} pp vs budget")
-    _mc2.metric("EBIT % (Budget target)", f"{_bud_pct:.1f}%")
-    _mc3.metric("OI — Monthly (kTL)",    fmt_ktl(_oi_m))
-    _mc4.metric("OI — YTD (kTL)",        fmt_ktl(_oi_ytd))
-
-    st.markdown("---")
-
-    # ── Section 4: YTD vs Target progress bars (full 6-tier) ────────────────────
-    st.markdown("#### YTD Progress vs 2026 Target")
-    st.caption("Cumulative YTD vs annual target. NS tiers are independent; EBIT tiers are cumulative additions.")
-
-    def _pbar(lbl, ytd_v, tgt_v):
-        _p = ytd_v / tgt_v if tgt_v > 0 else 0
-        _c1, _c2, _c3 = st.columns([4, 1, 1])
-        _c1.markdown(f"**{lbl}**")
-        _c1.progress(min(1.0, max(0.0, _p)))
-        _c2.metric("YTD (kTL)", fmt_ktl(ytd_v))
-        _c3.metric("Target (kTL)", fmt_ktl(tgt_v), delta=f"{_p:.0%}")
+    # ── Shared computed values ────────────────────────────────────────────────
+    _epct_exec    = _d.get("ebit_pct", {})
+    _ep_exec_idx  = _cat_index(_epct_exec.get("cats", []), _abbr) if _epct_exec else -1
+    _v_act_exec   = safe_float(_epct_exec["EBIT_Pct"][_ep_exec_idx])        if _ep_exec_idx != -1 and _epct_exec else _ebit_pct / 100
+    _v_bud_exec   = safe_float(_epct_exec["EBIT_Pct_Budget"][_ep_exec_idx]) if _ep_exec_idx != -1 and _epct_exec else _bud_pct / 100
+    _v_nf_exec    = safe_float(_epct_exec["NetFees_Pct"][_ep_exec_idx])     if _ep_exec_idx != -1 and _epct_exec else 0.0
 
     def _nv(k):
         return _ns[k][_ns_i]  if _ns_i  != -1 and _ns_i  < len(_ns[k])  else 0
@@ -2134,275 +2217,386 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
     def _et(k):
         return _ebit[k][_et_idx] if _et_idx != -1 and _et_idx < len(_ebit[k])  else 0
 
-    st.markdown("**Net Sales**")
-    _pbar("Contract",                       _nv("Contract"),                                        _nt("Contract"))
-    _pbar("Weighted Proposals (WP)",        _nv("WP"),                                              _nt("WP"))
-    _pbar("Full Outlook (Contract+WP+WO)",  sum(_nv(k) for k in ["Contract","WP","WO"]),            sum(_nt(k) for k in ["Contract","WP","WO"]))
-    st.markdown("**EBIT**")
-    _pbar("Contract",                       _ev("Contract"),       _et("Contract"))
-    _pbar("Contract + Weighted Proposals",  _ev("Contract+WP"),    _et("Contract+WP"))
-    _pbar("Full Outlook (Contract+WP+WO)",  _ev("Contract+WP+WO"), _et("Contract+WP+WO"))
+    def _pbar4(lbl, ytd_v, tgt_v):
+        """Progress-bar row with abbreviated numbers to avoid truncation."""
+        _p = ytd_v / tgt_v if tgt_v > 0 else 0
+        _c1, _c2, _c3, _c4 = st.columns([2.5, 1.5, 1.5, 1])
+        _c1.markdown(f"**{lbl}**")
+        _c1.progress(min(1.0, max(0.0, _p)))
+        _c2.metric("YTD (kTL)",    human_k(ytd_v), help=fmt_ktl(ytd_v))
+        _c3.metric("Target (kTL)", human_k(tgt_v), help=fmt_ktl(tgt_v))
+        _c4.metric("Coverage", f"{_p:.0%}")
 
+    # ── Section selector (radio avoids nested-tabs-in-fragment rendering glitch) ─
+    _exec_section = st.radio(
+        "Section", ["Overview", "YTD vs Target", "Rolling 12M", "Pipeline Health"],
+        horizontal=True, key="exec_section_sel",
+        label_visibility="collapsed",
+    )
     st.markdown("---")
 
-    # ── Section 5: BU Snapshot table ─────────────────────────────────────────
-    st.markdown("#### Business Unit Snapshot")
-    _bu_rows = []
-    for _bu in ["ENG", "MC", "T&SI", "NUC"]:
-        _bd_ns   = _d["bu_ns"][_bu]
-        _bd_eb   = _d["bu_ebit"][_bu]
-        _bns_i   = _cat_index(_bd_ns["cats"], _abbr)
-        _beb_i   = _cat_index(_bd_eb["cats"], _abbr)
-        _bns_tgt_i = _BU_TARGET_IDX
-        _bns_m   = sum(monthly_val(_bd_ns[t], _bd_ns["cats"], _bns_i) for t in ["Order", "Offer", "Opp"]) if _bns_i != -1 else 0
-        _bns_ytd = sum(_bd_ns[t][_bns_i] for t in ["Order", "Offer", "Opp"] if _bns_i != -1 and _bns_i < len(_bd_ns[t])) if _bns_i != -1 else 0
-        _bns_tgt = sum(_bd_ns[t][_bns_tgt_i] for t in ["Order", "Offer", "Opp"] if _bns_tgt_i < len(_bd_ns[t]))
-        _beb_m   = monthly_val(_bd_eb["Total"], _bd_eb["cats"], _beb_i) if _beb_i != -1 else 0
-        _beb_ytd = _bd_eb["Total"][_beb_i] if _beb_i != -1 and _beb_i < len(_bd_eb["Total"]) else 0
-        _bns_pct = _bns_ytd / _bns_tgt * 100 if _bns_tgt != 0 else 0
-        _bu_rows.append({
-            "BU":                _bu,
-            "NS Monthly (kTL)":  fmt_ktl(_bns_m),
-            "NS YTD (kTL)":      fmt_ktl(_bns_ytd),
-            "NS Target (kTL)":   fmt_ktl(_bns_tgt),
-            "vs Target":         f"{_bns_pct:.0f}%",
-            "EBIT Monthly (kTL)": fmt_ktl(_beb_m),
-            "EBIT YTD (kTL)":   fmt_ktl(_beb_ytd),
-        })
-    st.dataframe(pd.DataFrame(_bu_rows), hide_index=True, use_container_width=True)
-    st.download_button(
-        "⬇ Export Exec Summary",
-        df_to_excel_bytes(pd.DataFrame(_bu_rows)),
-        file_name=f"ExecSummary_{_sm_cur.replace(' ', '_')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="exec_export",
-    )
+    # ── Overview ─────────────────────────────────────────────────────────────
+    if _exec_section == "Overview":
+        st.markdown("#### Net Sales (kTL)")
+        _nc1, _nc2, _nc3, _nc4 = st.columns(4)
+        _nc1.metric("NS — Monthly",  fmt_ktl(_ns_m),
+                    delta=fmt_ktl(_ns_m - _p_ns_m) if _p_ns_m is not None else None)
+        _nc2.metric("NS — YTD",      fmt_ktl(_ns_ytd))
+        _nc3.metric("NS — EOY Fcst", fmt_ktl(_ns_eoy))
+        _nc4.metric("NS — Target",   fmt_ktl(_ns_tgt),
+                    delta=f"{_ns_ytd / _ns_tgt:.0%} achieved" if _ns_tgt else None,
+                    delta_color="off")
 
-    # ── Section 6: MoM / YoY delta (if two months loaded) ────────────────────
-    if _prev_sm and _prev_d:
+        st.markdown("#### EBIT (kTL)")
+        _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+        _ec1.metric("EBIT — Monthly",  fmt_ktl(_ebit_m),
+                    delta=fmt_ktl(_ebit_m - _p_eb_m) if _p_eb_m is not None else None)
+        _ec2.metric("EBIT — YTD",      fmt_ktl(_eb_ytd))
+        _ec3.metric("EBIT — EOY Fcst", fmt_ktl(_eb_eoy))
+        _ec4.metric("EBIT — Target",   fmt_ktl(_eb_tgt),
+                    delta=f"{_eb_ytd / _eb_tgt:.0%} achieved" if _eb_tgt else None,
+                    delta_color="off")
+
+        st.markdown("#### Margins & Order Intake")
+        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+        _mc1.metric("EBIT % (Actual)",   f"{_v_act_exec * 100:.1f}%",
+                    delta=f"{(_v_act_exec - _v_bud_exec) * 100:+.1f} pp vs Budget")
+        _mc2.metric("EBIT % (Budget)",   f"{_v_bud_exec * 100:.1f}%")
+        _mc3.metric("Net Fees %",        f"{_v_nf_exec * 100:.1f}%")
+        _mc4.metric("OI — Monthly (kTL)", fmt_ktl(_oi_m))
+        _mc5.metric("OI — YTD (kTL)",    fmt_ktl(_oi_ytd))
+
         st.markdown("---")
-        _is_yoy  = _sm_cur.split()[1] != _prev_sm.split()[1]
-        _cmp_tag = "YoY" if _is_yoy else "MoM"
-        st.markdown(f"#### {_cmp_tag} Δ — {_sm_l(_prev_sm)} → {_sm_l(_sm_cur)}")
-
-        _p_ns_ytd  = _prev_d["ns"]["Contract"][_cat_index(_prev_d["ns"]["cats"], _prev_abbr)] \
-                     if _cat_index(_prev_d["ns"]["cats"], _prev_abbr) != -1 else 0
-        _p_eb_ytd  = _prev_d["ebit"]["Contract"][_cat_index(_prev_d["ebit"]["cats"], _prev_abbr)] \
-                     if _cat_index(_prev_d["ebit"]["cats"], _prev_abbr) != -1 else 0
-        _d1, _d2, _d3, _d4 = st.columns(4)
-        _d1.metric("NS Monthly Δ", fmt_ktl(_ns_m - (_p_ns_m or 0)),
-                   delta=f"{(_ns_m - (_p_ns_m or 0)) / abs(_p_ns_m) * 100:+.1f}%" if _p_ns_m else None)
-        _d2.metric("NS YTD Δ",     fmt_ktl(_ns_ytd - _p_ns_ytd),
-                   delta=f"{(_ns_ytd - _p_ns_ytd) / abs(_p_ns_ytd) * 100:+.1f}%" if _p_ns_ytd else None)
-        _d3.metric("EBIT Monthly Δ", fmt_ktl(_ebit_m - (_p_eb_m or 0)),
-                   delta=f"{(_ebit_m - (_p_eb_m or 0)) / abs(_p_eb_m) * 100:+.1f}%" if _p_eb_m else None)
-        _d4.metric("EBIT YTD Δ",   fmt_ktl(_eb_ytd - _p_eb_ytd),
-                   delta=f"{(_eb_ytd - _p_eb_ytd) / abs(_p_eb_ytd) * 100:+.1f}%" if _p_eb_ytd else None)
-
-    # ── Section 7: Rolling 12-Month Net Sales ────────────────────────────────
-    st.markdown("---")
-    st.markdown("#### Rolling 12-Month Net Sales")
-    st.caption(
-        "Monthly NS over the trailing 12 months. "
-        "Current-year months use their own file; previous-year months use the December file (fully closed)."
-    )
-
-    _r12_view = st.radio(
-        "Breakdown", ["Company Total", "By Business Unit", "By Project", "By Client"],
-        horizontal=True, key="exec_r12_view",
-    )
-
-    # ── Build trailing-12 month slots ────────────────────────────────────────
-    _cur_month_name = _sm_cur.split()[0]
-    _cur_year       = int(_sm_cur.split()[1])
-    _cur_month_num  = MONTH_ORDER.index(_cur_month_name) + 1
-
-    _trailing_slots = []
-    for _offset in range(11, -1, -1):
-        _mo, _yr = _cur_month_num - _offset, _cur_year
-        while _mo <= 0:
-            _mo += 12; _yr -= 1
-        _trailing_slots.append((_yr, _mo, MONTH_ORDER[_mo - 1]))
-
-    _avail_sorted = sorted(
-        EXCEL_FILES.keys(),
-        key=lambda x: (int(x.split()[1]), MONTH_ORDER.index(x.split()[0])),
-    )
-    _r12_labels = [f"{mn[:3]} {str(yr)[2:]}" for yr, _, mn in _trailing_slots]
-
-    def _file_for_slot(yr, mn_name):
-        key = f"{mn_name} {yr}"
-        if key in EXCEL_FILES:
-            return key
-        dec = f"December {yr}"
-        if dec in EXCEL_FILES:
-            return dec
-        yf = [k for k in _avail_sorted if k.split()[1] == str(yr)]
-        return yf[-1] if yf else None
-
-    def _load_slot(yr, mn_name):
-        fk = _file_for_slot(yr, mn_name)
-        if not fk:
-            return None, None
-        fp = EXCEL_FILES[fk]
-        return load_month(str(fp)) if fp and fp.exists() else None, fk
-
-    # ── Shared layout helper ──────────────────────────────────────────────────
-    _r12_cur_sfx = str(_cur_year)[2:]
-
-    def _r12_bar_chart(fig, key):
-        fig.update_layout(
-            plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
-            yaxis_title="kTL", xaxis=dict(type="category"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            margin=dict(t=60, b=20), height=340,
-        )
-        st.plotly_chart(fig, use_container_width=True, key=key)
-        st.caption(f"Current year ({_cur_year}) bars are highlighted; prior year in grey.")
-
-    # ── Company Total ─────────────────────────────────────────────────────────
-    if _r12_view == "Company Total":
-        _r12_vals = []
-        for _yr_s, _, _mn_s in _trailing_slots:
-            _d_slot, _ = _load_slot(_yr_s, _mn_s)
-            if _d_slot:
-                _i = _cat_index(_d_slot["ns"]["cats"], _mn_s[:3])
-                _r12_vals.append(monthly_val(_d_slot["ns"]["Contract"], _d_slot["ns"]["cats"], _i) if _i != -1 else 0)
-            else:
-                _r12_vals.append(0)
-
-        if any(v != 0 for v in _r12_vals):
-            _lf = [human_k(v) for v in _r12_vals]
-            _fig_r12 = go.Figure(go.Bar(
-                x=_r12_labels, y=_r12_vals, text=_lf, textposition="outside",
-                cliponaxis=False,
-                marker_color=[PRIMARY if lbl.endswith(_r12_cur_sfx) else "#94A3B8" for lbl in _r12_labels],
-                hovertemplate="%{x}: %{customdata} kTL<extra></extra>", customdata=_lf,
-            ))
-            _r12_bar_chart(_fig_r12, "exec_r12_total")
-            _mom = [None] + [_r12_vals[i] - _r12_vals[i-1] for i in range(1, len(_r12_vals))]
-            _df_r12 = pd.DataFrame({
-                "Period": _r12_labels,
-                "NS Contract (kTL)": [fmt_ktl(v) for v in _r12_vals],
-                "MoM Δ": [f"+{human_k(d)}" if d is not None and d >= 0 else human_k(d) if d is not None else "—" for d in _mom],
+        st.markdown("#### Business Unit Snapshot")
+        _bu_rows = []
+        for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+            _bd_ns   = _d["bu_ns"][_bu]
+            _bd_eb   = _d["bu_ebit"][_bu]
+            _bns_i   = _cat_index(_bd_ns["cats"], _abbr)
+            _beb_i   = _cat_index(_bd_eb["cats"], _abbr)
+            _bns_tgt_i = _BU_TARGET_IDX
+            _bns_m   = sum(monthly_val(_bd_ns[t], _bd_ns["cats"], _bns_i) for t in ["Order", "Offer", "Opp"]) if _bns_i != -1 else 0
+            _bns_ytd = sum(_bd_ns[t][_bns_i] for t in ["Order", "Offer", "Opp"] if _bns_i != -1 and _bns_i < len(_bd_ns[t])) if _bns_i != -1 else 0
+            _bns_tgt = sum(_bd_ns[t][_bns_tgt_i] for t in ["Order", "Offer", "Opp"] if _bns_tgt_i < len(_bd_ns[t]))
+            _beb_m   = monthly_val(_bd_eb["Total"], _bd_eb["cats"], _beb_i) if _beb_i != -1 else 0
+            _beb_ytd = _bd_eb["Total"][_beb_i] if _beb_i != -1 and _beb_i < len(_bd_eb["Total"]) else 0
+            _bns_pct = _bns_ytd / _bns_tgt * 100 if _bns_tgt != 0 else 0
+            _bu_rows.append({
+                "BU":                 _bu,
+                "NS Monthly (kTL)":   fmt_ktl(_bns_m),
+                "NS YTD (kTL)":       fmt_ktl(_bns_ytd),
+                "NS Target (kTL)":    fmt_ktl(_bns_tgt),
+                "vs Target":          f"{_bns_pct:.0f}%",
+                "EBIT Monthly (kTL)": fmt_ktl(_beb_m),
+                "EBIT YTD (kTL)":     fmt_ktl(_beb_ytd),
             })
-            st.dataframe(_df_r12, hide_index=True, use_container_width=True)
-        else:
-            st.info("No NS data found for the trailing 12 months.")
+        st.dataframe(pd.DataFrame(_bu_rows), hide_index=True, use_container_width=True)
+        st.download_button(
+            "⬇ Export Exec Summary",
+            df_to_excel_bytes(pd.DataFrame(_bu_rows)),
+            file_name=f"ExecSummary_{_sm_cur.replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="exec_export",
+        )
 
-    # ── By Business Unit ──────────────────────────────────────────────────────
-    elif _r12_view == "By Business Unit":
-        _bu_series: dict[str, list] = {bu: [] for bu in ["ENG", "MC", "T&SI", "NUC"]}
-        for _yr_s, _, _mn_s in _trailing_slots:
-            _d_slot, _ = _load_slot(_yr_s, _mn_s)
-            for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+        if _prev_sm and _prev_d:
+            st.markdown("---")
+            _is_yoy  = _sm_cur.split()[1] != _prev_sm.split()[1]
+            _cmp_tag = "YoY" if _is_yoy else "MoM"
+            st.markdown(f"#### {_cmp_tag} Δ — {_sm_l(_prev_sm)} → {_sm_l(_sm_cur)}")
+            _p_ns_ytd  = _prev_d["ns"]["Contract"][_cat_index(_prev_d["ns"]["cats"], _prev_abbr)] \
+                         if _cat_index(_prev_d["ns"]["cats"], _prev_abbr) != -1 else 0
+            _p_eb_ytd  = _prev_d["ebit"]["Contract"][_cat_index(_prev_d["ebit"]["cats"], _prev_abbr)] \
+                         if _cat_index(_prev_d["ebit"]["cats"], _prev_abbr) != -1 else 0
+            _dd1, _dd2, _dd3, _dd4 = st.columns(4)
+            _dd1.metric("NS Monthly Δ",   fmt_ktl(_ns_m   - (_p_ns_m or 0)),
+                        delta=f"{(_ns_m - (_p_ns_m or 0)) / abs(_p_ns_m) * 100:+.1f}%" if _p_ns_m else None)
+            _dd2.metric("NS YTD Δ",       fmt_ktl(_ns_ytd - _p_ns_ytd),
+                        delta=f"{(_ns_ytd - _p_ns_ytd) / abs(_p_ns_ytd) * 100:+.1f}%" if _p_ns_ytd else None)
+            _dd3.metric("EBIT Monthly Δ", fmt_ktl(_ebit_m - (_p_eb_m or 0)),
+                        delta=f"{(_ebit_m - (_p_eb_m or 0)) / abs(_p_eb_m) * 100:+.1f}%" if _p_eb_m else None)
+            _dd4.metric("EBIT YTD Δ",     fmt_ktl(_eb_ytd - _p_eb_ytd),
+                        delta=f"{(_eb_ytd - _p_eb_ytd) / abs(_p_eb_ytd) * 100:+.1f}%" if _p_eb_ytd else None)
+
+    # ── YTD vs Target ────────────────────────────────────────────────────────
+    elif _exec_section == "YTD vs Target":
+        st.markdown(f"#### YTD vs Target — {_sm_l(_sm_cur)}")
+        st.caption("Cumulative YTD actuals vs annual target. Hover the number cards for full precision. NS tiers are independent; EBIT tiers are cumulative.")
+
+        if _t_idx != -1 and _ns_i != -1:
+            st.markdown("**Net Sales**")
+            _ns_contract_ytd = _nv("Contract")
+            _ns_wp_ytd       = _nv("WP")
+            _ns_wo_ytd       = _nv("WO")
+            _pbar4("Contract",                         _ns_contract_ytd, _nt("Contract"))
+            _pbar4("Weighted Proposals (WP)",          _ns_wp_ytd,       _nt("WP"))
+            _ytd_fo  = _ns_contract_ytd + _ns_wp_ytd + _ns_wo_ytd
+            _tgt_fo  = sum(_nt(k) for k in ["Contract", "WP", "WO"])
+            _pbar4("Full Outlook (Contract + WP + WO)", _ytd_fo, _tgt_fo)
+        else:
+            st.info("Target column not found in NS data.")
+
+        if _et_idx != -1 and _eb_i != -1:
+            st.markdown("---")
+            st.markdown("**EBIT**")
+            _pbar4("Contract",                        _ev("Contract"),       _et("Contract"))
+            _pbar4("Contract + Weighted Proposals",   _ev("Contract+WP"),    _et("Contract+WP"))
+            _pbar4("Full Outlook (Contract+WP+WO)",   _ev("Contract+WP+WO"), _et("Contract+WP+WO"))
+
+        if _ep_exec_idx != -1 and _epct_exec:
+            st.markdown("---")
+            st.markdown("**Margin Rates — current period**")
+            _xmr1, _xmr2, _xmr3 = st.columns(3)
+            _xmr1.metric("EBIT % (Actual)",  f"{_v_act_exec * 100:.1f}%",
+                         delta=f"{(_v_act_exec - _v_bud_exec) * 100:+.1f} pp vs Budget")
+            _xmr2.metric("EBIT % (Budget)",  f"{_v_bud_exec * 100:.1f}%")
+            _xmr3.metric("Net Fees %",        f"{_v_nf_exec * 100:.1f}%")
+
+    # ── Rolling 12M ──────────────────────────────────────────────────────────
+    elif _exec_section == "Rolling 12M":
+        st.markdown("#### Rolling 12-Month Net Sales")
+        st.caption(
+            "Monthly NS over the trailing 12 months. "
+            "Current-year months use their own file; previous-year months use the December file (fully closed)."
+        )
+
+        _r12_view = st.radio(
+            "Breakdown", ["Company Total", "By Business Unit", "By Project", "By Client"],
+            horizontal=True, key="exec_r12_view",
+        )
+
+        _cur_month_name = _sm_cur.split()[0]
+        _cur_year       = int(_sm_cur.split()[1])
+        _cur_month_num  = MONTH_ORDER.index(_cur_month_name) + 1
+
+        _trailing_slots = []
+        for _offset in range(11, -1, -1):
+            _mo, _yr = _cur_month_num - _offset, _cur_year
+            while _mo <= 0:
+                _mo += 12; _yr -= 1
+            _trailing_slots.append((_yr, _mo, MONTH_ORDER[_mo - 1]))
+
+        _avail_sorted = sorted(
+            EXCEL_FILES.keys(),
+            key=lambda x: (int(x.split()[1]), MONTH_ORDER.index(x.split()[0])),
+        )
+        _r12_labels = [f"{mn[:3]} {str(yr)[2:]}" for yr, _, mn in _trailing_slots]
+
+        def _file_for_slot(yr, mn_name):
+            if yr == _cur_year:
+                # Current year: use exact month file, fall back to latest available
+                key = f"{mn_name} {yr}"
+                if key in EXCEL_FILES:
+                    return key
+                yf = [k for k in _avail_sorted if k.split()[1] == str(yr)]
+                return yf[-1] if yf else None
+            else:
+                # Previous years: always prefer December (fully closed annual data)
+                dec = f"December {yr}"
+                if dec in EXCEL_FILES:
+                    return dec
+                yf = [k for k in _avail_sorted if k.split()[1] == str(yr)]
+                return yf[-1] if yf else None
+
+        def _load_slot(yr, mn_name):
+            fk = _file_for_slot(yr, mn_name)
+            if not fk:
+                return None, None
+            fp = EXCEL_FILES[fk]
+            return load_month(str(fp)) if fp and fp.exists() else None, fk
+
+        _r12_cur_sfx = str(_cur_year)[2:]
+
+        def _r12_bar_chart(fig, key):
+            fig.update_layout(
+                plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
+                yaxis_title="kTL", xaxis=dict(type="category"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                margin=dict(t=60, b=20), height=340,
+            )
+            st.plotly_chart(fig, use_container_width=True, key=key)
+            st.caption(f"Current year ({_cur_year}) bars are highlighted; prior year in grey.")
+
+        if _r12_view == "Company Total":
+            _r12_vals = []
+            for _yr_s, _, _mn_s in _trailing_slots:
+                _d_slot, _ = _load_slot(_yr_s, _mn_s)
                 if _d_slot:
-                    _bd = _d_slot["bu_ns"][_bu]
-                    _bi = _cat_index(_bd["cats"], _mn_s[:3])
-                    _v  = sum(monthly_val(_bd[t], _bd["cats"], _bi) for t in ["Order","Offer","Opp"]) if _bi != -1 else 0
+                    _i = _cat_index(_d_slot["ns"]["cats"], _mn_s[:3])
+                    _r12_vals.append(monthly_val(_d_slot["ns"]["Contract"], _d_slot["ns"]["cats"], _i) if _i != -1 else 0)
                 else:
-                    _v = 0
-                _bu_series[_bu].append(_v)
-
-        if any(any(v != 0 for v in vals) for vals in _bu_series.values()):
-            _fig_bu = go.Figure()
-            for _bu in ["ENG", "MC", "T&SI", "NUC"]:
-                _fig_bu.add_trace(go.Bar(
-                    x=_r12_labels, y=_bu_series[_bu], name=_bu,
-                    marker_color=BU_COLORS.get(_bu, "#888"),
-                    hovertemplate=f"<b>{_bu}</b> %{{x}}: %{{y:,.0f}} kTL<extra></extra>",
+                    _r12_vals.append(0)
+            if any(v != 0 for v in _r12_vals):
+                _lf = [human_k(v) for v in _r12_vals]
+                _fig_r12 = go.Figure(go.Bar(
+                    x=_r12_labels, y=_r12_vals, text=_lf, textposition="outside",
+                    cliponaxis=False,
+                    marker_color=[PRIMARY if lbl.endswith(_r12_cur_sfx) else "#94A3B8" for lbl in _r12_labels],
+                    hovertemplate="%{x}: %{customdata} kTL<extra></extra>", customdata=_lf,
                 ))
-            _fig_bu.update_layout(barmode="stack")
-            _r12_bar_chart(_fig_bu, "exec_r12_bu")
+                _r12_bar_chart(_fig_r12, "exec_r12_total")
+                _mom = [None] + [_r12_vals[i] - _r12_vals[i-1] for i in range(1, len(_r12_vals))]
+                _df_r12 = pd.DataFrame({
+                    "Period": _r12_labels,
+                    "NS Contract (kTL)": [fmt_ktl(v) for v in _r12_vals],
+                    "MoM Δ": [f"+{human_k(d)}" if d is not None and d >= 0 else human_k(d) if d is not None else "—" for d in _mom],
+                })
+                st.dataframe(_df_r12, hide_index=True, use_container_width=True)
+            else:
+                st.info("No NS data found for the trailing 12 months.")
 
-            _tbl_rows = []
-            for i, lbl in enumerate(_r12_labels):
-                _row = {"Period": lbl}
-                _tot = 0
+        elif _r12_view == "By Business Unit":
+            _bu_series: dict[str, list] = {bu: [] for bu in ["ENG", "MC", "T&SI", "NUC"]}
+            for _yr_s, _, _mn_s in _trailing_slots:
+                _d_slot, _ = _load_slot(_yr_s, _mn_s)
                 for _bu in ["ENG", "MC", "T&SI", "NUC"]:
-                    _row[f"{_bu} (kTL)"] = fmt_ktl(_bu_series[_bu][i])
-                    _tot += _bu_series[_bu][i]
-                _row["Total (kTL)"] = fmt_ktl(_tot)
-                _tbl_rows.append(_row)
-            st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
-        else:
-            st.info("No BU NS data found for the trailing 12 months.")
-
-    # ── By Project or By Client ───────────────────────────────────────────────
-    else:
-        _is_proj = (_r12_view == "By Project")
-        _ref_fk  = _file_for_slot(_cur_year, _cur_month_name)
-        _ref_fp  = EXCEL_FILES.get(_ref_fk) if _ref_fk else None
-        _ref_md  = load_margin_data(str(_ref_fp)) if _ref_fp and _ref_fp.exists() else None
-
-        if not _ref_md:
-            st.info("Ext. Prod. data unavailable — cannot build project/client breakdown.")
-        else:
-            if _is_proj:
-                _opts = sorted({info["name"] for info in _ref_md["projects"].values()})
-                _sel  = st.multiselect("Select Projects (max 5)", _opts, max_selections=5, key="exec_r12_projs")
-            else:
-                _opts = sorted({info["client"] for info in _ref_md["projects"].values() if info.get("client")})
-                _sel  = st.multiselect("Select Clients (max 5)",  _opts, max_selections=5, key="exec_r12_clis")
-
-            if not _sel:
-                st.info("Select at least one option to display.")
-            else:
-                _series: dict[str, list] = {s: [] for s in _sel}
-                for _yr_s, _, _mn_s in _trailing_slots:
-                    _fk_s = _file_for_slot(_yr_s, _mn_s)
-                    _fp_s = EXCEL_FILES.get(_fk_s) if _fk_s else None
-                    _md_s = load_margin_data(str(_fp_s)) if _fp_s and _fp_s.exists() else None
-                    _month_lbl = f"{_mn_s} {_yr_s}"   # e.g. "July 2025"
-                    for _sel_item in _sel:
+                    if _d_slot:
+                        _bd = _d_slot["bu_ns"][_bu]
+                        _bi = _cat_index(_bd["cats"], _mn_s[:3])
+                        _v  = sum(monthly_val(_bd[t], _bd["cats"], _bi) for t in ["Order","Offer","Opp"]) if _bi != -1 else 0
+                    else:
                         _v = 0
-                        if _md_s:
-                            for _pi in _md_s["projects"].values():
-                                _match = (_pi["name"] == _sel_item) if _is_proj else (_pi.get("client") == _sel_item)
-                                if _match:
-                                    _gf = _pi.get("type_data", {}).get("GROSS FEES", {})
-                                    _v += _gf.get(_month_lbl, 0)
-                        _series[_sel_item].append(_v)
+                    _bu_series[_bu].append(_v)
 
-                _lcolors = [PRIMARY, "#10B981", "#F59E0B", "#8B5CF6", "#EC4899"]
-                _fig_sel = go.Figure()
-                for _ci, _sel_item in enumerate(_sel):
-                    _vals = _series[_sel_item]
-                    _lbf  = [human_tl(v) for v in _vals]
-                    _fig_sel.add_trace(go.Scatter(
-                        x=_r12_labels, y=_vals, name=_sel_item[:30],
-                        mode="lines+markers+text",
-                        text=_lbf, textposition="top center",
-                        textfont=dict(size=9),
-                        line=dict(color=_lcolors[_ci % len(_lcolors)], width=2),
-                        marker=dict(size=7),
-                        hovertemplate=f"<b>{_sel_item}</b> %{{x}}: %{{customdata}}<extra></extra>",
-                        customdata=_lbf,
+            if any(any(v != 0 for v in vals) for vals in _bu_series.values()):
+                # Compute per-slot totals to determine label visibility threshold
+                _r12_bu_totals = [
+                    sum(_bu_series[_bu][i] for _bu in ["ENG", "MC", "T&SI", "NUC"])
+                    for i in range(len(_r12_labels))
+                ]
+                _r12_seg_max = max(_r12_bu_totals) if _r12_bu_totals else 1
+
+                _fig_bu = go.Figure()
+                for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                    _vals = _bu_series[_bu]
+                    # Show label only when the segment is tall enough to hold it
+                    _texts = [
+                        human_k(v) if v > 0 and v / _r12_seg_max >= _CHART_LABEL_PCT else ""
+                        for v in _vals
+                    ]
+                    _fig_bu.add_trace(go.Bar(
+                        x=_r12_labels, y=_vals, name=_bu,
+                        marker_color=BU_COLORS.get(_bu, "#888"),
+                        text=_texts,
+                        textposition="inside",
+                        insidetextanchor="middle",
+                        constraintext="inside",
+                        textfont=dict(size=11, color="white"),
+                        hovertemplate=f"<b>{_bu}</b> %{{x}}: %{{y:,.0f}} kTL<extra></extra>",
                     ))
-                _fig_sel.update_layout(
-                    plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
-                    yaxis_title="TL",
-                    xaxis=dict(type="category", tickangle=-45),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                    margin=dict(t=60, b=20), height=360,
-                )
-                st.plotly_chart(_fig_sel, use_container_width=True, key="exec_r12_sel")
+
+                # Total label above each bar via Scatter text trace
+                _fig_bu.add_trace(go.Scatter(
+                    x=_r12_labels,
+                    y=_r12_bu_totals,
+                    mode="text",
+                    text=[human_k(t) if t > 0 else "" for t in _r12_bu_totals],
+                    textposition="top center",
+                    textfont=dict(size=10, color=PRIMARY, family=_FONT),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
+
+                _fig_bu.update_layout(barmode="stack")
+                _r12_bar_chart(_fig_bu, "exec_r12_bu")
 
                 _tbl_rows = []
                 for i, lbl in enumerate(_r12_labels):
                     _row = {"Period": lbl}
-                    for _sel_item in _sel:
-                        _row[_sel_item[:25]] = human_tl(_series[_sel_item][i])
+                    _tot = 0
+                    for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                        _row[f"{_bu} (kTL)"] = fmt_ktl(_bu_series[_bu][i])
+                        _tot += _bu_series[_bu][i]
+                    _row["Total (kTL)"] = fmt_ktl(_tot)
                     _tbl_rows.append(_row)
-                _df_sel = pd.DataFrame(_tbl_rows)
-                st.dataframe(_df_sel, hide_index=True, use_container_width=True)
-                st.download_button(
-                    "⬇ Export to Excel",
-                    df_to_excel_bytes(_df_sel),
-                    file_name=f"NS_12M_{'Project' if _is_proj else 'Client'}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="exec_r12_export",
-                )
+                st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
+            else:
+                st.info("No BU NS data found for the trailing 12 months.")
+
+        else:
+            _is_proj = (_r12_view == "By Project")
+            _ref_fk  = _file_for_slot(_cur_year, _cur_month_name)
+            _ref_fp  = EXCEL_FILES.get(_ref_fk) if _ref_fk else None
+            _ref_md  = load_margin_data(str(_ref_fp)) if _ref_fp and _ref_fp.exists() else None
+
+            if not _ref_md:
+                st.info("Ext. Prod. data unavailable — cannot build project/client breakdown.")
+            else:
+                if _is_proj:
+                    _opts = sorted({info["name"] for info in _ref_md["projects"].values()})
+                    _sel  = st.multiselect("Select Projects (max 5)", _opts, max_selections=5, key="exec_r12_projs")
+                else:
+                    _opts = sorted({info["client"] for info in _ref_md["projects"].values() if info.get("client")})
+                    _sel  = st.multiselect("Select Clients (max 5)",  _opts, max_selections=5, key="exec_r12_clis")
+
+                if not _sel:
+                    st.info("Select at least one option to display.")
+                else:
+                    _series: dict[str, list] = {s: [] for s in _sel}
+                    for _yr_s, _, _mn_s in _trailing_slots:
+                        _fk_s = _file_for_slot(_yr_s, _mn_s)
+                        _fp_s = EXCEL_FILES.get(_fk_s) if _fk_s else None
+                        _md_s = load_margin_data(str(_fp_s)) if _fp_s and _fp_s.exists() else None
+                        _month_lbl = f"{_mn_s} {_yr_s}"
+                        for _sel_item in _sel:
+                            _v = 0
+                            if _md_s:
+                                for _pi in _md_s["projects"].values():
+                                    _match = (_pi["name"] == _sel_item) if _is_proj else (_pi.get("client") == _sel_item)
+                                    if _match:
+                                        _gf = _pi.get("type_data", {}).get("GROSS FEES", {})
+                                        _v += _gf.get(_month_lbl, 0)
+                            _series[_sel_item].append(_v)
+
+                    _lcolors = [PRIMARY, "#10B981", "#F59E0B", "#8B5CF6", "#EC4899"]
+                    _fig_sel = go.Figure()
+                    for _ci, _sel_item in enumerate(_sel):
+                        _vals = _series[_sel_item]
+                        _lbf  = [human_tl(v) for v in _vals]
+                        _fig_sel.add_trace(go.Scatter(
+                            x=_r12_labels, y=_vals, name=_sel_item[:30],
+                            mode="lines+markers+text",
+                            text=_lbf, textposition="top center",
+                            textfont=dict(size=9),
+                            line=dict(color=_lcolors[_ci % len(_lcolors)], width=2),
+                            marker=dict(size=7),
+                            hovertemplate=f"<b>{_sel_item}</b> %{{x}}: %{{customdata}}<extra></extra>",
+                            customdata=_lbf,
+                        ))
+                    _fig_sel.update_layout(
+                        plot_bgcolor="white", font=dict(family=_FONT, color=PRIMARY),
+                        yaxis_title="TL",
+                        xaxis=dict(type="category", tickangle=-45),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        margin=dict(t=60, b=20), height=360,
+                    )
+                    st.plotly_chart(_fig_sel, use_container_width=True, key="exec_r12_sel")
+
+                    _tbl_rows = []
+                    for i, lbl in enumerate(_r12_labels):
+                        _row = {"Period": lbl}
+                        for _sel_item in _sel:
+                            _row[_sel_item[:25]] = human_tl(_series[_sel_item][i])
+                        _tbl_rows.append(_row)
+                    _df_sel = pd.DataFrame(_tbl_rows)
+                    st.dataframe(_df_sel, hide_index=True, use_container_width=True)
+                    st.download_button(
+                        "⬇ Export to Excel",
+                        df_to_excel_bytes(_df_sel),
+                        file_name=f"NS_12M_{'Project' if _is_proj else 'Client'}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="exec_r12_export",
+                    )
+
+    # ── Pipeline Health ───────────────────────────────────────────────────────
+    else:  # Pipeline Health
+        if _d:
+            st.markdown("#### NS Pipeline Health by BU")
+            st.caption(
+                "YTD cumulative pipeline (Order/Offer/Opp) per BU vs year-end target. "
+                "Order = contracted. Offer = pending. Opp = identified opportunities. All values in kTL."
+            )
+            _pipeline_health_section(_d, _sm_cur, "exec")
 
 
 @st.fragment
@@ -2414,7 +2608,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
     )
 
     with st.spinner("Loading margin data…"):
-        margin_data = merge_margin_data(selected_months)
+        margin_data = merge_margin_data(tuple(selected_months))
 
     # Per-file data for breakdown comparison (current vs previous month file)
     _all_avail_sm  = sorted(EXCEL_FILES.keys(),
@@ -2440,14 +2634,25 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
         )
         _fc1, _fc2 = st.columns(2)
         with _fc1:
-            ph_bu_filter = st.multiselect(
-                "Business Unit",
-                ["ENG", "MC", "T&SI", "NUC"],
-                default=["ENG", "MC", "T&SI", "NUC"],
-                key="ph_bu_filter",
-            )
+            if global_bu_view == "Company Total":
+                ph_bu_filter = st.multiselect(
+                    "Business Unit",
+                    ["ENG", "MC", "T&SI", "NUC"],
+                    default=["ENG", "MC", "T&SI", "NUC"],
+                    key="ph_bu_filter",
+                )
+            else:
+                # Lock to the global BU selection to prevent empty WIP/chart results
+                ph_bu_filter = [global_bu_view]
+                st.multiselect(
+                    "Business Unit",
+                    ["ENG", "MC", "T&SI", "NUC"],
+                    default=[global_bu_view],
+                    key="ph_bu_filter",
+                    disabled=True,
+                    help=f"Locked to {global_bu_view} by the top Business Unit selector. Switch to 'Company Total' to search across all BUs.",
+                )
         with _fc2:
-            # Multiselect with built-in search — cleaner than the 2-step text+select pattern
             ph_cli_filter = st.multiselect(
                 "Client (type to search)",
                 _all_ph_clients,
@@ -2913,7 +3118,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
 def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
     _sm_label  = lambda sm: sm if multi_year else sm.split()[0]
     st.markdown("### Scenarios")
-    sc_tabs = st.tabs(["BU Comparison", "YTD vs Target", "Pipeline Health", "Top 10 Clients", "BU Mix", "What-If"])
+    sc_tabs = st.tabs(["BU Comparison", "Top 10 Clients", "Portfolio Mix", "What-If"])
 
     _sm_latest   = selected_months[-1]
     _d_latest    = loaded_data.get(_sm_latest)
@@ -3029,193 +3234,7 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 _fig_ebit.update_traces(textposition="outside", cliponaxis=False)
                 st.plotly_chart(_fig_ebit, use_container_width=True, key="sc_buebit")
 
-    # ── S4: YTD vs Target ─────────────────────────────────────────────────────
     with sc_tabs[1]:
-        if _d_latest:
-            _ns    = _d_latest["ns"]
-            _ebit  = _d_latest["ebit"]
-            _t_idx = next((i for i, c in enumerate(_ns["cats"]) if "target" in str(c).lower()), None)
-            _ytd_abbr = _sm_latest.split()[0][:3]
-            _y_idx    = _cat_index(_ns["cats"], _ytd_abbr)
-
-            if _t_idx is not None and _y_idx != -1:
-                st.markdown(f"#### YTD vs 2026 Target — {_sm_latest}")
-                st.caption("Progress bars show YTD actuals (cumulative) against the 2026 annual target.")
-
-                # NS tiers
-                st.markdown("**Net Sales**")
-                for _tier, _label in [("Contract", "Contract"), ("WP", "Weighted Proposals (WP)")]:
-                    _target = _ns[_tier][_t_idx]
-                    _ytd    = _ns[_tier][_y_idx]
-                    _pct    = _ytd / _target if _target > 0 else 0
-                    _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
-                    _tc1.markdown(f"**{_label}**")
-                    _tc1.progress(min(1.0, max(0.0, _pct)))
-                    _tc2.metric("YTD (kTL)", fmt_ktl(_ytd))
-                    _tc3.metric("Target (kTL)", fmt_ktl(_target), delta=f"{_pct:.0%}")
-                # Full Outlook = Contract + WP + WO
-                _ytd_fo    = sum(_ns[k][_y_idx] for k in ["Contract", "WP", "WO"])
-                _target_fo = sum(_ns[k][_t_idx] for k in ["Contract", "WP", "WO"])
-                _pct_fo    = _ytd_fo / _target_fo if _target_fo > 0 else 0
-                _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
-                _tc1.markdown("**Full Outlook (Contract+WP+WO)**")
-                _tc1.progress(min(1.0, max(0.0, _pct_fo)))
-                _tc2.metric("YTD (kTL)", fmt_ktl(_ytd_fo))
-                _tc3.metric("Target (kTL)", fmt_ktl(_target_fo), delta=f"{_pct_fo:.0%}")
-
-                st.markdown("---")
-
-                # EBIT tiers
-                _et_idx = next((i for i, c in enumerate(_ebit["cats"]) if "target" in str(c).lower()), None)
-                _ey_idx = _cat_index(_ebit["cats"], _ytd_abbr)
-                if _et_idx is not None and _ey_idx != -1:
-                    st.markdown("**EBIT**")
-                    for _tier, _label in [
-                        ("Contract", "Contract"),
-                        ("Contract+WP", "Contract + Weighted Proposals"),
-                        ("Contract+WP+WO", "Full Outlook (Contract+WP+WO)"),
-                    ]:
-                        _target = _ebit[_tier][_et_idx]
-                        _ytd    = _ebit[_tier][_ey_idx]
-                        _pct    = _ytd / _target if _target > 0 else 0
-                        _tc1, _tc2, _tc3 = st.columns([3, 1, 1])
-                        _tc1.markdown(f"**{_label}**")
-                        _tc1.progress(min(1.0, max(0.0, _pct)))
-                        _tc2.metric("YTD (kTL)", fmt_ktl(_ytd))
-                        _tc3.metric("Target (kTL)", fmt_ktl(_target), delta=f"{_pct:.0%}")
-
-                    # ── EBIT % / Net Fees % margin rates ──────────────────────
-                    _epct = _d_latest.get("ebit_pct")
-                    if _epct:
-                        _ep_idx = _cat_index(_epct["cats"], _ytd_abbr)
-                        if _ep_idx != -1:
-                            st.markdown("---")
-                            st.markdown("**Margin Rates — current period**")
-                            _mr1, _mr2, _mr3 = st.columns(3)
-                            _v_act  = _epct["EBIT_Pct"][_ep_idx]
-                            _v_bud  = _epct["EBIT_Pct_Budget"][_ep_idx]
-                            _v_nf   = _epct["NetFees_Pct"][_ep_idx]
-                            _mr1.metric("EBIT % (Actual)",  f"{_v_act*100:.1f}%",
-                                        delta=f"{(_v_act-_v_bud)*100:.1f}pp vs Budget")
-                            _mr2.metric("EBIT % (Budget)",  f"{_v_bud*100:.1f}%")
-                            _mr3.metric("Net Fees %",        f"{_v_nf*100:.1f}%")
-            else:
-                st.info("Could not locate the 2026 Target column in the NS data.")
-        else:
-            st.warning("No data available for the selected month.")
-
-    # ── S7: Pipeline Health ───────────────────────────────────────────────────
-    with sc_tabs[2]:
-        if _d_latest:
-            st.markdown(f"#### NS Pipeline by BU — {_sm_latest}")
-            st.caption(
-                "Order = contracted revenue. Offer = additional NS if pending offers are won. "
-                "Opp = additional NS from identified opportunities."
-            )
-            _abbr_l = _sm_latest.split()[0][:3]
-            _pipe_rows = []
-            _TARGET_IDX = _BU_TARGET_IDX  # MON_BU_Base=2 → [0]=2025, [1]=2026 Target, [2]=Jan
-            for _bu in ["ENG", "MC", "T&SI", "NUC"]:
-                _bd  = _d_latest["bu_ns"][_bu]
-                _mi  = _cat_index(_bd["cats"], _abbr_l)
-                if _mi == -1:
-                    continue
-                _ord = _bd["Order"][_mi] if _mi < len(_bd["Order"]) else 0
-                _off = _bd["Offer"][_mi] if _mi < len(_bd["Offer"]) else 0
-                _opp = _bd["Opp"][_mi]   if _mi < len(_bd["Opp"])   else 0
-                _tot = _ord + _off + _opp
-                # 2026 Target from index 1 of bu_ns cats
-                _tgt_ord = _bd["Order"][_TARGET_IDX] if _TARGET_IDX < len(_bd["Order"]) else 0
-                _tgt_off = _bd["Offer"][_TARGET_IDX] if _TARGET_IDX < len(_bd["Offer"]) else 0
-                _tgt_opp = _bd["Opp"][_TARGET_IDX]   if _TARGET_IDX < len(_bd["Opp"])   else 0
-                _target  = _tgt_ord + _tgt_off + _tgt_opp
-                _pipe_rows.append({
-                    "BU":           _bu,
-                    "Order":        _ord,
-                    "Offer":        _off,
-                    "Opp":          _opp,
-                    "Total":        _tot,
-                    "Target":       _target,
-                    "YTD vs Tgt%":  round(_tot / _target * 100, 1) if _target > 0 else 0,
-                    "Order%":       round(_ord / _tot * 100, 1) if _tot > 0 else 0,
-                    "Offer Rate%":  round((_ord + _off) / _tot * 100, 1) if _tot > 0 else 0,
-                })
-
-            if _pipe_rows:
-                _df_pipe = pd.DataFrame(_pipe_rows)
-                _df_melt = _df_pipe.melt(
-                    id_vars=["BU"], value_vars=["Order", "Offer", "Opp"],
-                    var_name="Stage", value_name="Value (kTL)",
-                )
-                # BU-specific tier colors using bu_tier_colors()
-                _bu_stage_cmap = {}
-                for _buc in ["ENG", "MC", "T&SI", "NUC"]:
-                    _tc = bu_tier_colors(_buc)
-                    _bu_stage_cmap[f"{_buc} Order"] = _tc[0]
-                    _bu_stage_cmap[f"{_buc} Offer"] = _tc[1]
-                    _bu_stage_cmap[f"{_buc} Opp"]   = _tc[2]
-                _df_melt["BU_Stage"] = _df_melt["BU"] + " " + _df_melt["Stage"]
-                # Abbreviated labels
-                _pipe_seg_max = _df_melt["Value (kTL)"].abs().max() or 1
-                _df_melt["Label"] = _df_melt["Value (kTL)"].apply(
-                    lambda v: human_k(v) if abs(v) / _pipe_seg_max >= _CHART_LABEL_PCT else ""
-                )
-                _fig_pipe = px.bar(
-                    _df_melt, x="BU", y="Value (kTL)", color="BU_Stage",
-                    barmode="stack",
-                    color_discrete_map=_bu_stage_cmap,
-                    text="Label",
-                    category_orders={"BU_Stage": [
-                        f"{b} {s}" for b in ["ENG", "MC", "T&SI", "NUC"]
-                        for s in ["Order", "Offer", "Opp"]
-                    ]},
-                )
-                _fig_pipe.update_layout(
-                    plot_bgcolor="white",
-                    font=dict(family=_FONT, color=PRIMARY),
-                    legend=dict(
-                        orientation="h",
-                        yanchor="top",
-                        y=-0.18,
-                        xanchor="center",
-                        x=0.5,
-                        font=dict(size=11),
-                    ),
-                    legend_title_text="",
-                    margin=dict(t=20, b=160),
-                )
-                _fig_pipe.update_traces(
-                    textposition="inside",
-                    insidetextanchor="middle",
-                    textfont=dict(size=11, color="white"),
-                    cliponaxis=False,
-                )
-                st.plotly_chart(_fig_pipe, use_container_width=True, key="sc_pipeline")
-
-                st.markdown("**Conversion Rates vs 2026 Target**")
-                _cr_cols = st.columns(len(_pipe_rows))
-                for _ci, _row in enumerate(_pipe_rows):
-                    _bu_col = _cr_cols[_ci]
-                    _bu_col.markdown(f"**{_row['BU']}**")
-                    _bu_col.metric("YTD Pipeline (kTL)", fmt_ktl(_row["Total"]))
-                    _bu_col.metric("2026 Target (kTL)",  fmt_ktl(_row["Target"]))
-                    _bu_col.metric("YTD vs Target",      f"{_row['YTD vs Tgt%']}%")
-                    _bu_col.metric("Order (secured)",    f"{_row['Order%']}%")
-                    _bu_col.metric("Order + Offer",      f"{_row['Offer Rate%']}%")
-
-                _df_pipe_disp = _df_pipe.copy()
-                for _fc in ["Total", "Target", "Order", "Offer", "Opp"]:
-                    _df_pipe_disp[_fc] = _df_pipe_disp[_fc].apply(fmt_ktl)
-                st.dataframe(
-                    _df_pipe_disp[["BU", "Order", "Offer", "Opp", "Total", "Target",
-                                   "YTD vs Tgt%", "Order%", "Offer Rate%"]],
-                    hide_index=True, use_container_width=True,
-                )
-        else:
-            st.warning("No data available for the selected month.")
-
-    # ── S9: Top 10 Clients ────────────────────────────────────────────────────
-    with sc_tabs[3]:
         st.markdown("#### Top Clients")
         _cv = st.radio(
             "Data source", ["Net Sales (Production)", "WIP"],
@@ -3300,9 +3319,9 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                 key="sc_top10_export",
             )
 
-    # ── S5: BU Mix ────────────────────────────────────────────────────────────
-    with sc_tabs[4]:
-        st.markdown("#### BU Mix — Include / Exclude Business Units")
+    # ── Portfolio Mix ─────────────────────────────────────────────────────────
+    with sc_tabs[2]:
+        st.markdown("#### Portfolio Mix — Include / Exclude Business Units")
         st.caption(
             "Toggle BUs on/off to see the combined NS and EBIT for your selection, "
             "the impact of excluded BUs, and each selection's share of the company total. "
@@ -3462,8 +3481,8 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
                     key="sc_mix_export",
                 )
 
-    # ── S6: What-If ───────────────────────────────────────────────────────────
-    with sc_tabs[5]:
+    # ── What-If ───────────────────────────────────────────────────────────────
+    with sc_tabs[3]:
         st.markdown("#### What-If Analysis")
         st.caption(
             "Adjust assumptions to see projected NS and EBIT impact on the latest selected month. "
@@ -3558,12 +3577,18 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             _wf_y_plot.append(0)  # go.Waterfall "total" measure ignores y — running sum is used
             _wf_measure.append("total")
             _wf_text.append(fmt_ktl(_wi_ns_adj))
+            # Compute y-axis max with 20% headroom so outside labels never clip
+            _wf_bar_max = max((_wi_ns_base, _wi_ns_adj), default=0)
+            _wf_ymax    = _wf_bar_max * 1.20 if _wf_bar_max > 0 else None
+
             _fig_wf = go.Figure(go.Waterfall(
                 x=_wf_x,
                 y=_wf_y_plot,
                 measure=_wf_measure,
                 text=_wf_text,
                 textposition="outside",
+                cliponaxis=False,
+                textfont=dict(size=12),
                 connector=dict(line=dict(color="#9CA3AF")),
                 increasing=dict(marker_color="#10B981"),
                 decreasing=dict(marker_color="#EF4444"),
@@ -3572,9 +3597,9 @@ def _render_scenarios(loaded_data, selected_months, global_bu_view, multi_year):
             _fig_wf.update_layout(
                 plot_bgcolor="white",
                 font=dict(family=_FONT, color=PRIMARY),
-                yaxis_title="kTL",
-                margin=dict(t=40, b=20),
-                height=320,
+                yaxis=dict(title="kTL", range=[0, _wf_ymax] if _wf_ymax else None),
+                margin=dict(t=60, b=20),
+                height=360,
             )
             st.plotly_chart(_fig_wf, use_container_width=True, key="wi_waterfall")
             st.caption(

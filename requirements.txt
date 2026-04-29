@@ -1,0 +1,26 @@
+# ════════════════════════════════════════════════════════════════════════════
+# MRC Business Review Dashboard — Requirements
+# ════════════════════════════════════════════════════════════════════════════
+
+# Core Data & Analytics
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Visualization & Charts
+plotly>=6.0.0
+matplotlib>=3.7.0
+seaborn>=0.13.0
+
+# Web Application Framework
+streamlit>=1.28.0
+streamlit-aggrid>=1.0.0
+
+# Document & Data File Handling
+openpyxl>=3.1.0        # Excel file reading/writing
+python-pptx>=0.6.21    # PowerPoint generation
+PyYAML>=6.0            # Configuration file parsing
+
+# Additional Analysis Tools (optional but recommended)
+scipy>=1.10.0          # Scientific computing (used in data analysis)
+scikit-learn>=1.3.0    # ML utilities if used in analysis
+Pillow>=9.5.0          # Image handling for charts
