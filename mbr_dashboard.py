@@ -297,6 +297,18 @@ def _cat_index(cats, label):
     return -1
 
 
+def _monthly_delta(arr, cats, idx):
+    """Per-month delta for month-label columns; raw value for non-month columns.
+
+    Uses monthly_val() — the same function the metric cards rely on — so it
+    handles cumulative-to-delta conversion reliably regardless of how the
+    category labels are formatted in the Excel.
+    """
+    if str(cats[idx]).strip().lower()[:3] in _MONTH_ABBREVS:
+        return monthly_val(arr, cats, idx)
+    return arr[idx] if idx < len(arr) else 0.0
+
+
 def _find_eoy_idx(cats):
     """Return index of the end-of-year column (Dec or current-year label). Returns -1 if not found."""
     for i, c in enumerate(cats):
@@ -523,7 +535,8 @@ def load_month(filepath: str):
         bu_ebit[b_key] = {
             "cats":  cats_bu_ebit,
             "Total": row_vals(df, _r_cfg.get(b_row, 100) - 1, c_ebit_s, c_ebit_e),
-            "Pct":   row_vals(df, _r_cfg.get(p_row_key, p_row_def), c_ebit_s, c_ebit_e),
+            # Reporting code uses bu_ebit_row(xrow) = df.iloc[xrow - 1, ...] → same -1 here
+            "Pct":   row_vals(df, _r_cfg.get(p_row_key, p_row_def) - 1, c_ebit_s, c_ebit_e),
         }
 
     # ── Build raw dicts ────────────────────────────────────────────────────────
@@ -538,6 +551,7 @@ def load_month(filepath: str):
         "Contract":       row_vals(df, R["Slide4_Contract"],       1, 16),
         "Contract+WP":    row_vals(df, R["Slide4_Contract_WP"],    1, 16),
         "Contract+WP+WO": row_vals(df, R["Slide4_Contract_WP_WO"], 1, 16),
+        # EBIT_P_kTL config value is already 0-indexed (Excel row 43 = pandas row 42 = default 42)
         "Pct":            row_vals(df, _r_cfg.get("EBIT_P_kTL", 42), 1, 16),
     }
 
@@ -1394,15 +1408,14 @@ def render_ns_view(sm, data, prev_sm, prev_data, is_total, bu_name):
     )
 
     # ── Chart data table ───────────────────────────────────────────────────────
-    with st.expander("📊 Chart Data (YTD Cumulative, kTL)", expanded=False):
+    with st.expander("📊 Chart Data (kTL)", expanded=False):
         _n_ns  = min(len(ns["cats"]), min(len(ns[k]) for k in k_list))
-        _deltas = {k: to_monthly_deltas(ns[k], ns["cats"]) for k in k_list}
         _tbl_rows = []
         for _i in range(_n_ns):
             _row = {"Period": ns["cats"][_i]}
             for k in k_list:
-                _row[f"{k} (Monthly)"] = fmt_ktl(_deltas[k][_i])
-                _row[f"{k} (YTD)"]     = fmt_ktl(ns[k][_i])
+                _row[f"{k} (Monthly Δ)"] = fmt_ktl(_monthly_delta(ns[k], ns["cats"], _i))
+                _row[f"{k} (YTD)"]       = fmt_ktl(ns[k][_i])
             _tbl_rows.append(_row)
         st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
         st.download_button(
@@ -1512,15 +1525,14 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
                 st.plotly_chart(fig_bu_pct, use_container_width=True, key=f"ebit_bu_pct_{bu_name}_{sm}")
 
     # ── Chart data table ───────────────────────────────────────────────────────
-    with st.expander("📊 Chart Data (YTD Cumulative, kTL)", expanded=False):
+    with st.expander("📊 Chart Data (kTL)", expanded=False):
         _n_eb  = min(len(ebit["cats"]), min(len(ebit[k]) for k in k_list))
-        _ed    = {k: to_monthly_deltas(ebit[k], ebit["cats"]) for k in k_list}
         _etbl  = []
         for _i in range(_n_eb):
             _row = {"Period": ebit["cats"][_i]}
             for k in k_list:
-                _row[f"{k} (Monthly)"] = fmt_ktl(_ed[k][_i])
-                _row[f"{k} (YTD)"]     = fmt_ktl(ebit[k][_i])
+                _row[f"{k} (Monthly Δ)"] = fmt_ktl(_monthly_delta(ebit[k], ebit["cats"], _i))
+                _row[f"{k} (YTD)"]       = fmt_ktl(ebit[k][_i])
             _etbl.append(_row)
         st.dataframe(pd.DataFrame(_etbl), hide_index=True, use_container_width=True)
         st.download_button(
@@ -1532,79 +1544,76 @@ def render_ebit_view(sm, data, prev_sm, prev_data, is_total, bu_name):
         )
 
     # ── EBIT % margin rates — computed from loaded EBIT / NS data ─────────────
-    # Rows 66-68 in the Excel can be empty; computing from data we already load
-    # is reliable and avoids depending on potentially-zeroed % rows.
+    # ── EBIT % trend — same source as reporting code (Summary TL EBIT_P_kTL row) ─
     if is_total:
-        _ns   = data["ns"]
-        _eb   = ebit  # already resolved above (ebit = data["ebit"] for is_total)
+        _eb      = ebit  # data["ebit"] for Company Total
+        _pct_arr = _eb.get("Pct", [])   # from Summary TL, same row as reporting code
 
+        # Actual EBIT % at current month: read directly from ebit["Pct"] (Summary TL)
+        _act_pct = safe_float(_pct_arr[ebit_idx]) * 100 if ebit_idx != -1 and ebit_idx < len(_pct_arr) else 0
+
+        # Budget EBIT % and Net Fees %: still from EBIT Calc. sheet (rows 67/68 Excel)
         _epct    = data.get("ebit_pct")
-        _ep_i    = _cat_index(_epct["cats"], month_abbr) if _epct else -1
-
-        # Current-month YTD cumulative margin (from Excel row 66)
-        _act_raw = safe_float(_epct["EBIT_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["EBIT_Pct"])) else 0
-        _act_pct = _act_raw * 100
-
-        # Budget margin: from Excel row 67
-        _bud_raw = safe_float(_epct["EBIT_Pct_Budget"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["EBIT_Pct_Budget"])) else 0
+        _ep_i    = _cat_index(_epct["cats"], month_abbr) if _epct and _epct.get("cats") else -1
+        _bud_raw = safe_float(_epct["EBIT_Pct_Budget"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct.get("EBIT_Pct_Budget", []))) else 0
         _bud_pct = _bud_raw * 100
+        _nf_raw  = safe_float(_epct["NetFees_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct.get("NetFees_Pct", []))) else 0
+        _nf_pct  = _nf_raw * 100 if _nf_raw != 0 else None
 
-        # Net Fees %: try the stored row first (it may be non-zero); fall back to N/A
-        _nf_raw  = safe_float(_epct["NetFees_Pct"][_ep_i]) if (_epct and _ep_i != -1 and _ep_i < len(_epct["NetFees_Pct"])) else 0
-        _nf_pct  = _nf_raw * 100 if _nf_raw != 0 else None  # None = no data
-
-        st.caption(f"EBIT Margin Rates — {sm} (YTD Cumulative)")
+        st.caption(f"EBIT Margin Rates — {sm}")
         _pc1, _pc2, _pc3 = st.columns(3)
         _pc1.metric(
-            "EBIT % (Actual, YTD)",
+            "EBIT % (Actual)",
             f"{_act_pct:.1f}%",
-            delta=f"{_act_pct - _bud_pct:+.1f} pp vs Budget",
+            delta=f"{_act_pct - _bud_pct:+.1f} pp vs Budget" if _bud_pct else None,
         )
-        _pc2.metric("EBIT % (Budget target)", f"{_bud_pct:.1f}%")
+        _pc2.metric("EBIT % (Budget)", f"{_bud_pct:.1f}%")
         _pc3.metric("Net Fees %", f"{_nf_pct:.1f}%" if _nf_pct is not None else "N/A")
 
-        # Monthly trend: YTD cumulative EBIT % for each month column
+        # Trend chart: actual line from ebit["Pct"] (Summary TL) — identical logic to BU view
         _ep_month_idxs = [
-            i for i, c in enumerate(_eb["cats"][:len(_eb["Contract"])])
+            i for i, c in enumerate(_eb["cats"][:len(_pct_arr)])
             if str(c).strip().lower()[:3] in _MONTH_ABBREVS
         ]
-        if _ep_month_idxs:
-            _ep_cats   = [_eb["cats"][i] for i in _ep_month_idxs]
-            _ep_act    = []
+        if _ep_month_idxs and any(safe_float(_pct_arr[i]) != 0 for i in _ep_month_idxs):
+            _ep_cats = [_eb["cats"][i] for i in _ep_month_idxs]
+            _ep_act  = [safe_float(_pct_arr[i]) * 100 for i in _ep_month_idxs]
+
+            # Budget line: from EBIT Calc. sheet (one value per month via cross-sheet lookup)
             _ep_bud_ln = []
             for _mi in _ep_month_idxs:
-                _ep_cat_str = _eb["cats"][_mi]
-                _epct_i = _cat_index(_epct["cats"], _ep_cat_str) if _epct else -1
-                
-                _act_m_raw = safe_float(_epct["EBIT_Pct"][_epct_i]) if (_epct and _epct_i != -1 and _epct_i < len(_epct["EBIT_Pct"])) else 0
-                _ep_act.append(_act_m_raw * 100)
-                
-                _bud_m_raw = safe_float(_epct["EBIT_Pct_Budget"][_epct_i]) if (_epct and _epct_i != -1 and _epct_i < len(_epct["EBIT_Pct_Budget"])) else 0
-                _ep_bud_ln.append(_bud_m_raw * 100)
+                _epct_i = _cat_index(_epct["cats"], _eb["cats"][_mi]) if _epct and _epct.get("cats") else -1
+                _bm = safe_float(_epct["EBIT_Pct_Budget"][_epct_i]) * 100 if (_epct and _epct_i != -1 and _epct_i < len(_epct.get("EBIT_Pct_Budget", []))) else 0
+                _ep_bud_ln.append(_bm)
 
             fig_pct = go.Figure()
             fig_pct.add_trace(go.Scatter(
-                x=_ep_cats, y=_ep_act, name="EBIT % (YTD Actual)",
+                x=_ep_cats, y=_ep_act, name="EBIT %",
                 mode="lines+markers+text",
                 text=[f"{v:.1f}%" for v in _ep_act],
                 textposition="top center",
                 line=dict(color=PRIMARY, width=2),
                 marker=dict(size=7),
             ))
-            fig_pct.add_trace(go.Scatter(
-                x=_ep_cats, y=_ep_bud_ln, name="EBIT % Budget Target",
-                mode="lines",
-                line=dict(color="#F59E0B", width=2, dash="dash"),
-            ))
-            if _nf_pct is not None:
-                _ep_nf = [safe_float(_epct["NetFees_Pct"][_cat_index(_epct["cats"], _eb["cats"][i])]) * 100
-                          for i in _ep_month_idxs]
+            if any(v != 0 for v in _ep_bud_ln):
                 fig_pct.add_trace(go.Scatter(
-                    x=_ep_cats, y=_ep_nf, name="Net Fees %",
-                    mode="lines+markers",
-                    line=dict(color="#10B981", width=2, dash="dot"),
-                    marker=dict(size=6),
+                    x=_ep_cats, y=_ep_bud_ln, name="Budget Target",
+                    mode="lines",
+                    line=dict(color="#F59E0B", width=2, dash="dash"),
                 ))
+            if _nf_pct is not None:
+                _ep_nf = [
+                    safe_float(_epct["NetFees_Pct"][_cat_index(_epct["cats"], _eb["cats"][i])]) * 100
+                    if (_epct and _epct.get("cats")) else 0
+                    for i in _ep_month_idxs
+                ]
+                if any(v != 0 for v in _ep_nf):
+                    fig_pct.add_trace(go.Scatter(
+                        x=_ep_cats, y=_ep_nf, name="Net Fees %",
+                        mode="lines+markers",
+                        line=dict(color="#10B981", width=2, dash="dot"),
+                        marker=dict(size=6),
+                    ))
             fig_pct.update_layout(
                 plot_bgcolor="white",
                 font=dict(family=_FONT, color=PRIMARY),
