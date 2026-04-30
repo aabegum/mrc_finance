@@ -2113,8 +2113,6 @@ def _pipeline_health_section(d_latest, sm_latest, key_pfx):
         _buc.progress(_ytd_frac, text=f"{_row['YTD vs Tgt%']}% of target")
         _buc.metric("YTD Pipeline (kTL)",    fmt_ktl(_row["Total"]))
         _buc.metric("Year-End Target (kTL)", fmt_ktl(_row["Year-End Target"]))
-        _buc.metric("Secured (Order%)",      f"{_row['Secured%']}%")
-        _buc.metric("Secured+Offer%",        f"{_row['Secured+Offer%']}%")
 
     # Summary table with company total row
     _comp_tot = _df_ph["Total"].sum()
@@ -2124,8 +2122,6 @@ def _pipeline_health_section(d_latest, sm_latest, key_pfx):
         _df_ph_disp[_fc] = _df_ph_disp[_fc].apply(fmt_ktl)
     # Convert rate columns to strings now so the TOTAL row "—" doesn't mix types
     _df_ph_disp["YTD vs Tgt%"]    = _df_ph_disp["YTD vs Tgt%"].apply(lambda v: f"{v}%")
-    _df_ph_disp["Secured%"]        = _df_ph_disp["Secured%"].apply(lambda v: f"{v}%")
-    _df_ph_disp["Secured+Offer%"]  = _df_ph_disp["Secured+Offer%"].apply(lambda v: f"{v}%")
     _total_ph_row = {
         "BU":               "TOTAL",
         "Order":            fmt_ktl(_df_ph["Order"].sum()),
@@ -2134,15 +2130,12 @@ def _pipeline_health_section(d_latest, sm_latest, key_pfx):
         "Total":            fmt_ktl(_comp_tot),
         "Year-End Target":  fmt_ktl(_comp_tgt),
         "YTD vs Tgt%":      f"{round(_comp_tot / _comp_tgt * 100, 1)}%" if _comp_tgt > 0 else "—",
-        "Secured%":         "—",
-        "Secured+Offer%":   "—",
     }
     _df_ph_display = pd.concat(
         [_df_ph_disp, pd.DataFrame([_total_ph_row])], ignore_index=True,
     )
     st.dataframe(
-        _df_ph_display[["BU", "Order", "Offer", "Opp", "Total", "Year-End Target",
-                         "YTD vs Tgt%", "Secured%", "Secured+Offer%"]],
+        _df_ph_display[["BU", "Order", "Offer", "Opp", "Total", "Year-End Target", "YTD vs Tgt%"]],
         hide_index=True, use_container_width=True,
     )
 
@@ -2444,13 +2437,20 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
                     hovertemplate="%{x}: %{customdata} kTL<extra></extra>", customdata=_lf,
                 ))
                 _r12_bar_chart(_fig_r12, "exec_r12_total")
+                _r12_total = sum(_r12_vals)
+                st.metric("Total NS — Last 12 Months (kTL)", fmt_ktl(_r12_total))
                 _mom = [None] + [_r12_vals[i] - _r12_vals[i-1] for i in range(1, len(_r12_vals))]
                 _df_r12 = pd.DataFrame({
                     "Period": _r12_labels,
                     "NS Contract (kTL)": [fmt_ktl(v) for v in _r12_vals],
                     "MoM Δ": [f"+{human_k(d)}" if d is not None and d >= 0 else human_k(d) if d is not None else "—" for d in _mom],
                 })
-                st.dataframe(_df_r12, hide_index=True, use_container_width=True)
+                _df_r12_total = pd.DataFrame([{
+                    "Period": "TOTAL",
+                    "NS Contract (kTL)": fmt_ktl(_r12_total),
+                    "MoM Δ": "—",
+                }])
+                st.dataframe(pd.concat([_df_r12, _df_r12_total], ignore_index=True), hide_index=True, use_container_width=True)
             else:
                 st.info("No NS data found for the trailing 12 months.")
 
@@ -2510,6 +2510,7 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
                 _r12_bar_chart(_fig_bu, "exec_r12_bu")
 
                 _tbl_rows = []
+                _grand_total_bu = 0
                 for i, lbl in enumerate(_r12_labels):
                     _row = {"Period": lbl}
                     _tot = 0
@@ -2517,8 +2518,14 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
                         _row[f"{_bu} (kTL)"] = fmt_ktl(_bu_series[_bu][i])
                         _tot += _bu_series[_bu][i]
                     _row["Total (kTL)"] = fmt_ktl(_tot)
+                    _grand_total_bu += _tot
                     _tbl_rows.append(_row)
-                st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
+                _total_bu_row = {"Period": "TOTAL", "Total (kTL)": fmt_ktl(_grand_total_bu)}
+                for _bu in ["ENG", "MC", "T&SI", "NUC"]:
+                    _total_bu_row[f"{_bu} (kTL)"] = fmt_ktl(sum(_bu_series[_bu]))
+                st.metric("Total NS — Last 12 Months (kTL)", fmt_ktl(_grand_total_bu))
+                _df_bu_tbl = pd.DataFrame(_tbl_rows)
+                st.dataframe(pd.concat([_df_bu_tbl, pd.DataFrame([_total_bu_row])], ignore_index=True), hide_index=True, use_container_width=True)
             else:
                 st.info("No BU NS data found for the trailing 12 months.")
 
@@ -2587,8 +2594,13 @@ def _render_exec_summary(loaded_data, selected_months, multi_year):
                         for _sel_item in _sel:
                             _row[_sel_item[:25]] = human_tl(_series[_sel_item][i])
                         _tbl_rows.append(_row)
+                    _grand_total_sel = sum(sum(v) for v in _series.values())
+                    _total_sel_row = {"Period": "TOTAL"}
+                    for _sel_item in _sel:
+                        _total_sel_row[_sel_item[:25]] = human_tl(sum(_series[_sel_item]))
+                    st.metric("Total — Last 12 Months (TL)", human_tl(_grand_total_sel))
                     _df_sel = pd.DataFrame(_tbl_rows)
-                    st.dataframe(_df_sel, hide_index=True, use_container_width=True)
+                    st.dataframe(pd.concat([_df_sel, pd.DataFrame([_total_sel_row])], ignore_index=True), hide_index=True, use_container_width=True)
                     st.download_button(
                         "⬇ Export to Excel",
                         df_to_excel_bytes(_df_sel),
@@ -2780,7 +2792,7 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     "Show costs upward",
                     key="ph_flip_neg",
                     help=(
-                        "Multiplies negative values by −1 so cost-type bars point upward. "
+                        "Multiplies all values by −1 so cost-type bars point upward. "
                         "Only affects the chart; raw data below is unchanged."
                     ),
                 ) if ph_view == "Production (Ext. Prod.)" else False
@@ -2818,6 +2830,9 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                     _col_prv_bo = f"End {_prev_bo_yr} Forecast (Prev)"
 
                     _breakdown_rows = []
+                    _tot_cur_m = 0; _tot_cur_bo = 0
+                    _tot_prv_m = 0; _tot_prv_bo = 0
+                    _has_prv_m_any = False; _has_prv_bo_any = False
                     for _ct in _available_types_sorted:
                         # Type-level data from current file
                         _td_cur = {}
@@ -2863,6 +2878,29 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                             _row[_col_prv_bo]        = human_tl(_prv_bo_val) if (_prv_bo_key and _prv_bo_val is not None) else "—"
                             _row["Δ EoY Forecast"]   = _delta_str(_bo_delta)
                         _breakdown_rows.append(_row)
+
+                        # Accumulate totals
+                        _tot_cur_m  += _cur_m_val
+                        _tot_cur_bo += _cur_bo_val
+                        if _prv_m_val is not None:
+                            _tot_prv_m += _prv_m_val; _has_prv_m_any = True
+                        if _prv_bo_val is not None:
+                            _tot_prv_bo += _prv_bo_val; _has_prv_bo_any = True
+
+                    # Total (Margin) row
+                    _tot_m_delta  = (_tot_cur_m  - _tot_prv_m)  if _has_prv_m_any  else None
+                    _tot_bo_delta = (_tot_cur_bo - _tot_prv_bo) if _has_prv_bo_any else None
+                    _total_row = {
+                        "Cost Type": "TOTAL (Margin)",
+                        _col_cur_m:  human_tl(_tot_cur_m),
+                        _col_cur_bo: human_tl(_tot_cur_bo),
+                    }
+                    if _has_prev:
+                        _total_row[_col_prev_m]      = human_tl(_tot_prv_m) if _has_prv_m_any else "—"
+                        _total_row["Δ Month"]         = _delta_str(_tot_m_delta)
+                        _total_row[_col_prv_bo]       = human_tl(_tot_prv_bo) if _has_prv_bo_any else "—"
+                        _total_row["Δ EoY Forecast"]  = _delta_str(_tot_bo_delta)
+                    _breakdown_rows.append(_total_row)
 
                     # Reorder columns: Cost Type | Actual | Projected | Δ Month | EoY Cur | EoY Prev | Δ EoY
                     _cols_order = ["Cost Type", _col_cur_m, _col_cur_bo]
@@ -2925,10 +2963,9 @@ def _render_project_history(loaded_data, selected_months, global_bu_view, multi_
                 _axis_lbl  = "Margin (TL)" if ph_cost_type == _ALLTYPE_LABEL else "Production (TL)"
 
                 def _apply_flip(vals):
-                    """Flip negatives to positive when 'Show costs upward' is on."""
                     if not ph_flip_neg:
                         return list(vals)
-                    return [-v if v < 0 else v for v in vals]
+                    return [-v for v in vals]
 
                 if margin_rows:
                     df_margin = pd.DataFrame([
